@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">FP Animator</string>
+    <string name="a11y_description">Shows your animation while your finger is on the fingerprint sensor.</string>
+</resources>
