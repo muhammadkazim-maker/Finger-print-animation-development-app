@@ -195,8 +195,185 @@ object AnimationCatalog {
                 archetype = VisualArchetype.CHRONO_REACTOR_HUD,
                 primaryHex = 0xFF00E5FFL,
                 secondaryHex = 0xFF0091EAL
+            ),
+            createProVideoDesign(
+                id = "pro_video_14_cyan_sunwave_tendrils",
+                index = 14,
+                name = "Cyan Sunwave Tendrils Ring",
+                styleLabel = "Pro Video #14 • Sunwave",
+                description = "Organic cyan & teal solar-wave tendrils twisting around a dark core",
+                archetype = VisualArchetype.PLASMA_CAUSTIC_SPHERE,
+                primaryHex = 0xFF00E5FFL,
+                secondaryHex = 0xFF00BFA5L
+            ),
+            createProVideoDesign(
+                id = "pro_video_15_ice_blue_particle_globe",
+                index = 15,
+                name = "Ice-Blue 3D Particle Vortex Globe",
+                styleLabel = "Pro Video #15 • Particle Globe",
+                description = "Glowing ice-blue luminous particle vortex sphere swirling in 3D",
+                archetype = VisualArchetype.QUANTUM_PARTICLE_SPHERE,
+                primaryHex = 0xFF40C4FFL,
+                secondaryHex = 0xFF0091EAL
+            ),
+            createProVideoDesign(
+                id = "pro_video_16_cobalt_violet_wave_orb",
+                index = 16,
+                name = "Cobalt & Violet 3D Wave Orb",
+                styleLabel = "Pro Video #16 • Wave Orb",
+                description = "Deep cobalt-blue & violet 3D undulating particle wave sphere",
+                archetype = VisualArchetype.QUANTUM_PARTICLE_SPHERE,
+                primaryHex = 0xFF536DFEL,
+                secondaryHex = 0xFF7C4DFFL
+            ),
+            createProVideoDesign(
+                id = "pro_video_17_neon_green_cyan_ribbon",
+                index = 17,
+                name = "Neon Green & Cyan Ribbon Wave",
+                styleLabel = "Pro Video #17 • Ribbon Wave",
+                description = "Morphing 3D neon emerald-green & electric-cyan harmonic ribbon ring",
+                archetype = VisualArchetype.WAVE_RIPPLE,
+                primaryHex = 0xFF00E676L,
+                secondaryHex = 0xFF00E5FFL
+            ),
+            createProVideoDesign(
+                id = "pro_video_18_magenta_stardust_portal",
+                index = 18,
+                name = "Magenta Plasma & Stardust Portal",
+                styleLabel = "Pro Video #18 • Stardust Portal",
+                description = "Blazing magenta plasma ring with shimmering blue stardust core",
+                archetype = VisualArchetype.SINGULARITY_SUPERNOVA,
+                primaryHex = 0xFFFF4081L,
+                secondaryHex = 0xFF2979FFL
+            ),
+            createProVideoDesign(
+                id = "pro_video_19_blue_plasma_energy_core",
+                index = 19,
+                name = "Blue Electric Plasma Energy Core",
+                styleLabel = "Pro Video #19 • Energy Core",
+                description = "High-voltage blue plasma energy ring with radiating lightning filaments",
+                archetype = VisualArchetype.PLASMA_CAUSTIC_SPHERE,
+                primaryHex = 0xFF2979FFL,
+                secondaryHex = 0xFF00E5FFL
+            ),
+            createProVideoDesign(
+                id = "pro_video_20_cyan_purple_silk_orb",
+                index = 20,
+                name = "Cyan & Purple 3D Silk Mesh Orb",
+                styleLabel = "Pro Video #20 • Silk Orb",
+                description = "Rotating 3D electric cyan & violet silk particle mesh sphere",
+                archetype = VisualArchetype.DICHROIC_LIQUID_ORB,
+                primaryHex = 0xFF00E5FFL,
+                secondaryHex = 0xFFD500F9L
+            ),
+            createProVideoDesign(
+                id = "pro_video_21_polar_star_radar_grid",
+                index = 21,
+                name = "Polar Starlight Radar Grid",
+                styleLabel = "Pro Video #21 • Polar Radar",
+                description = "Counter-rotating sapphire polar radar grid with 8 pulsing perimeter star-nodes",
+                archetype = VisualArchetype.SCAN_LASER,
+                primaryHex = 0xFF448AFFL,
+                secondaryHex = 0xFF82B1FFL
+            ),
+            createProVideoDesign(
+                id = "pro_video_22_cyan_dot_matrix_hud",
+                index = 22,
+                name = "Cyan Dot-Matrix Telemetry HUD",
+                styleLabel = "Pro Video #22 • Dot-Matrix HUD",
+                description = "3 counter-rotating cyan dot-matrix, equalizer bar & scanner arc rings",
+                archetype = VisualArchetype.CHRONO_REACTOR_HUD,
+                primaryHex = 0xFF00E5FFL,
+                secondaryHex = 0xFF00B8D4L
+            ),
+            createProVideoDesign(
+                id = "pro_video_23_cyan_matrix_overdrive_hud",
+                index = 23,
+                name = "Cyan Dot-Matrix Overdrive Dual-Spin",
+                styleLabel = "Pro Video #23 • Matrix Overdrive",
+                description = "High-speed dual-spin overdrive HUD with counter-rotating dot-matrix bezel",
+                archetype = VisualArchetype.CHRONO_REACTOR_HUD,
+                primaryHex = 0xFF18FFFFL,
+                secondaryHex = 0xFF0091EAL
+            ),
+            createProVideoDesign(
+                id = "pro_video_24_aqua_wave_mesh_sphere",
+                index = 24,
+                name = "Aqua 3D Wave Mesh Sphere",
+                styleLabel = "Pro Video #24 • Wave Mesh",
+                description = "Counter-rotating 3D cyan particle stipple core & undulating wave crest shell",
+                archetype = VisualArchetype.QUANTUM_PARTICLE_SPHERE,
+                primaryHex = 0xFF00E5FFL,
+                secondaryHex = 0xFF00B0FFL
+            ),
+            createProVideoDesign(
+                id = "pro_video_25_electric_lightning_globe",
+                index = 25,
+                name = "High-Voltage Electric Lightning Globe",
+                styleLabel = "Pro Video #25 • Lightning Globe",
+                description = "Counter-rotating electric blue plasma lightning arcs with high-voltage surge",
+                archetype = VisualArchetype.PLASMA_CAUSTIC_SPHERE,
+                primaryHex = 0xFF2979FFL,
+                secondaryHex = 0xFF80D8FFL
+            ),
+            createProVideoDesign(
+                id = "pro_video_26_fiber_optic_light_ring",
+                index = 26,
+                name = "White-Cyan Fiber-Optic Swirl Ring",
+                styleLabel = "Pro Video #26 • Fiber-Optic",
+                description = "Multi-speed streaming white & cyan fiber-optic light trails on transparent core",
+                archetype = VisualArchetype.ATOMIC_COMET_ORBITS,
+                primaryHex = 0xFF80D8FFL,
+                secondaryHex = 0xFF2979FFL
+            ),
+            createProVideoDesign(
+                id = "pro_video_27_cyber_notched_hud_scanner",
+                index = 27,
+                name = "Cyber Notched Tactical HUD Scanner",
+                styleLabel = "Pro Video #27 • Notched HUD",
+                description = "Counter-rotating outer notched brackets, triangle indicators & inner equalizer ticks",
+                archetype = VisualArchetype.CHRONO_REACTOR_HUD,
+                primaryHex = 0xFF00B0FFL,
+                secondaryHex = 0xFF00E5FFL
+            ),
+            createProVideoDesign(
+                id = "pro_video_28_hypnotic_spiral_torus",
+                index = 28,
+                name = "Hypnotic Optical Spiral Torus",
+                styleLabel = "Pro Video #28 • Spiral Torus",
+                description = "Spinning blue, cyan & gold logarithmic spiral torus with real optical wave motion",
+                archetype = VisualArchetype.GALAXY_ORBIT,
+                primaryHex = 0xFF00E5FFL,
+                secondaryHex = 0xFFFFD740L
+            ),
+            createProVideoDesign(
+                id = "pro_video_29_neon_circuit_trace_ring",
+                index = 29,
+                name = "Neon Pink & Cyan Circuit Trace Ring",
+                styleLabel = "Pro Video #29 • Circuit Ring",
+                description = "3 counter-rotating neon magenta-to-cyan circuit trace bands with pulsing nodes",
+                archetype = VisualArchetype.MATRIX_CIRCUIT,
+                primaryHex = 0xFFFF4081L,
+                secondaryHex = 0xFF00E5FFL
             )
-        )
+        ) + ProVideoFolder.items.drop(29).map { item ->
+            val archetype = when (item.motionProfile) {
+                ProMotionProfile.STAR_RADAR_GRID -> VisualArchetype.SCAN_LASER
+                ProMotionProfile.ARMILLARY_3D_GYRO -> VisualArchetype.ATOMIC_COMET_ORBITS
+                ProMotionProfile.PLASMA_VORTEX_PORTAL -> VisualArchetype.SINGULARITY_SUPERNOVA
+                else -> VisualArchetype.CHRONO_REACTOR_HUD
+            }
+            createProVideoDesign(
+                id = item.fallbackLottieDesignId,
+                index = item.index,
+                name = item.title,
+                styleLabel = item.badge,
+                description = item.subtitle,
+                archetype = archetype,
+                primaryHex = item.accentHex,
+                secondaryHex = 0xFF00E5FFL
+            )
+        }
     }
 
     val categories: List<AnimationCategory> by lazy {

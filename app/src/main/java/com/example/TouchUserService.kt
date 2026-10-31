@@ -226,7 +226,8 @@ class TouchUserService : ITouchService.Stub() {
         val x = IntArray(n) { -1 }
         val y = IntArray(n) { -1 }
         val on = BooleanArray(n)
-        val hasCoordThisTouch = BooleanArray(n)
+        val hasXThisTouch = BooleanArray(n)
+        val hasYThisTouch = BooleanArray(n)
         var slot = 0
         var fodKeyHeld = false
 
@@ -255,7 +256,7 @@ class TouchUserService : ITouchService.Stub() {
                         if (isInsideZone(x[i], y[i], aod, wasInside)) {
                             inside = true
                             break
-                        } else if (aod && !hasCoordThisTouch[i]) {
+                        } else if (aod && !hasXThisTouch[i] && !hasYThisTouch[i]) {
                             // In AOD low-power FOD gesture mode, the touch IC often emits BTN_TOUCH
                             // or ABS_MT_TRACKING_ID only when the hardware FOD sensor area is pressed.
                             inside = true
@@ -299,24 +300,32 @@ class TouchUserService : ITouchService.Stub() {
                             ABS_MT_TRACKING_ID -> {
                                 if (value == -1) {
                                     on[slot] = false
-                                    hasCoordThisTouch[slot] = false
+                                    hasXThisTouch[slot] = false
+                                    hasYThisTouch[slot] = false
                                 } else {
                                     on[slot] = true
-                                    hasCoordThisTouch[slot] = false
+                                    hasXThisTouch[slot] = false
+                                    hasYThisTouch[slot] = false
                                 }
                                 dirty = true
                             }
                             ABS_MT_POSITION_X, ABS_X -> {
                                 x[slot] = value
                                 on[slot] = true
-                                hasCoordThisTouch[slot] = true
+                                hasXThisTouch[slot] = true
                                 dirty = true
+                                if (!lastDispatched && hasYThisTouch[slot]) {
+                                    evaluateFrame()
+                                }
                             }
                             ABS_MT_POSITION_Y, ABS_Y -> {
                                 y[slot] = value
                                 on[slot] = true
-                                hasCoordThisTouch[slot] = true
+                                hasYThisTouch[slot] = true
                                 dirty = true
+                                if (!lastDispatched && hasXThisTouch[slot]) {
+                                    evaluateFrame()
+                                }
                             }
                         }
                     }
@@ -326,7 +335,8 @@ class TouchUserService : ITouchService.Stub() {
                                 if (value == 0) {
                                     for (i in 0 until n) {
                                         on[i] = false
-                                        hasCoordThisTouch[i] = false
+                                        hasXThisTouch[i] = false
+                                        hasYThisTouch[i] = false
                                     }
                                     fodKeyHeld = false
                                 } else if (value == 1) {
@@ -337,6 +347,7 @@ class TouchUserService : ITouchService.Stub() {
                             isDedicatedFodKeyCode(code) -> {
                                 fodKeyHeld = if (code == KEY_FOD_UP) false else (value != 0)
                                 dirty = true
+                                evaluateFrame()
                             }
                         }
                     }

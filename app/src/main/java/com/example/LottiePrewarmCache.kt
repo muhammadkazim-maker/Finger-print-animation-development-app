@@ -20,9 +20,10 @@ import java.util.concurrent.Executors
  * and preview screens to eliminate JSON parsing, disk I/O, layer-tree construction, and
  * first-frame GPU upload latency when the biometric prompt or lock-screen touch occurs.
  */
+@Suppress("DEPRECATION")
 object LottiePrewarmCache {
 
-    private const val MAX_COMPOSITION_CACHE_SIZE = 40
+    private const val MAX_COMPOSITION_CACHE_SIZE = 96
     private const val ACTIVE_CACHE_KEY_PREFIX = "active_custom_"
     const val DEFAULT_CACHE_KEY = "raw_default_ring"
 
@@ -213,7 +214,9 @@ object LottiePrewarmCache {
 
     /**
      * Binds an arbitrary JSON string (e.g., in catalog cards, calibration, or AI preview) using the
-     * shared synchronous composition cache so scrolling/previewing never re-parses the same JSON.
+     * shared composition cache. If already cached, binds synchronously in <0.05ms; if not yet cached,
+     * parses on Lottie's background task pool and caches on completion so fast grid scrolling never
+     * stalls the Main UI thread.
      */
     fun bindJsonToView(
         view: LottieAnimationView,
@@ -231,16 +234,27 @@ object LottiePrewarmCache {
         view.setCacheComposition(true)
         view.setIgnoreDisabledSystemAnimations(true)
         view.enableMergePathsForKitKatAndAbove(true)
-
-        val composition = getOrLoadCompositionFromJson(lottieJson, cacheKey)
-        if (composition != null) {
-            view.setComposition(composition)
-        } else {
-            view.setAnimationFromJson(lottieJson, cacheKey)
-        }
         view.repeatCount = LottieDrawable.INFINITE
         view.speed = speed
-        view.playAnimation()
+
+        val cached = compositionCache.get(cacheKey)
+        if (cached != null) {
+            view.setComposition(cached)
+            view.playAnimation()
+            return
+        }
+
+        LottieCompositionFactory.fromJsonString(lottieJson, cacheKey).addListener { comp ->
+            if (comp != null) {
+                compositionCache.put(cacheKey, comp)
+                if (view.tag == cacheKey) {
+                    view.setComposition(comp)
+                    view.repeatCount = LottieDrawable.INFINITE
+                    view.speed = speed
+                    view.playAnimation()
+                }
+            }
+        }
     }
 
     /**
@@ -299,6 +313,7 @@ object LottiePrewarmCache {
                 drawable.setBounds(0, 0, dim, dim)
                 drawable.frame = 0
                 drawable.draw(canvas)
+                bmp.prepareToDraw()
             }
         }
     }

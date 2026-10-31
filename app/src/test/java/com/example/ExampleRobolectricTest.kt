@@ -56,17 +56,21 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `ProVideoFolder has all 13 uploaded mp4 videos and transparent RGBA webp atlases in assets pro_videos folder and OverlayAnimHostView binds them`() {
+    fun `ProVideoFolder has all 129 uploaded videos and real designs in assets pro_videos folder and OverlayAnimHostView binds them`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val items = ProVideoFolder.items
-        assertEquals(13, items.size)
+        assertEquals(129, items.size)
         for (item in items) {
-            assertTrue("Video asset ${item.assetPath} must exist in assets/pro_videos/", ProVideoFolder.assetExists(context, item.assetPath))
-            assertTrue("Transparent atlas ${item.atlasAssetPath} must exist in assets/pro_videos/", ProVideoFolder.assetExists(context, item.atlasAssetPath))
+            assertTrue("Video/design asset ${item.assetPath} must exist in assets/pro_videos/", ProVideoFolder.assetExists(context, item.assetPath))
+            assertTrue("Transparent WebP ${item.atlasAssetPath} must exist in assets/pro_videos/", ProVideoFolder.assetExists(context, item.atlasAssetPath))
             val decodedAtlas = ProVideoFrameCache.getOrDecodeAtlas(context, item.assetPath, preferCompact = true)
-            assertNotNull("Decoded transparent frame atlas must not be null for ${item.id}", decodedAtlas)
+            assertNotNull("Decoded transparent WebP must not be null for ${item.id}", decodedAtlas)
             val cornerAlpha = android.graphics.Color.alpha(decodedAtlas!!.getPixel(0, 0))
             assertEquals("Corner background pixel must be 100% transparent (alpha = 0) for ${item.id}", 0, cornerAlpha)
+            if (!item.isAtlasGrid) {
+                val layers = ProVideoFrameCache.getCachedDesignLayers(item.assetPath, preferCompact = true)
+                assertNotNull("Concentric multi-ring layers must be generated for real design ${item.id}", layers)
+            }
         }
 
         val firstVideo = items.first()
@@ -83,9 +87,9 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `AnimationCatalog has all 13 Pro Video designs, 20 sheets, and all 922 designs parse cleanly`() {
+    fun `AnimationCatalog has all 129 Pro Video designs, 20 sheets, and all 922 designs parse cleanly`() {
         val proVideos = AnimationCatalog.proVideoDesigns
-        assertEquals(13, proVideos.size)
+        assertEquals(129, proVideos.size)
         for (pro in proVideos) {
             val res = LottieCompositionFactory.fromJsonStringSync(pro.lottieJson, pro.id)
             assertNotNull("Failed to parse Pro Video Lottie JSON for ${pro.id}", res.value)

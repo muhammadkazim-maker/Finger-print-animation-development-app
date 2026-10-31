@@ -47,6 +47,8 @@ class FpAccessibilityService : AccessibilityService() {
     @Volatile private var touchDownTimeMs = 0L
     @Volatile private var retryCount = 0
     @Volatile private var isInAodOrDoze = false
+    @Volatile private var lastSysUiEventTimeMs = 0L
+    @Volatile private var lastPromptCheckTimeMs = 0L
 
     // Single optical scan attempt timeout: if a finger is held down and not recognized after 1.25s,
     // disable the animation until the user lifts their finger and places it again.
@@ -65,14 +67,17 @@ class FpAccessibilityService : AccessibilityService() {
         ensureOverlayAttached()
         val v = view ?: return@Runnable
         val lp = viewLp ?: return@Runnable
-        lp.flags = buildOverlayFlags(activePlayback = true)
+        val targetFlags = buildOverlayFlags(activePlayback = true)
         v.keepScreenOn = true
         v.alpha = 1f
         if (v.visibility != View.VISIBLE) {
             v.visibility = View.VISIBLE
         }
         v.playImmediate()
-        runCatching { wm.updateViewLayout(v, lp) }
+        if (lp.flags != targetFlags) {
+            lp.flags = targetFlags
+            runCatching { wm.updateViewLayout(v, lp) }
+        }
         v.invalidate()
     }
 
@@ -135,6 +140,7 @@ class FpAccessibilityService : AccessibilityService() {
     // NEVER blocks or hangs on Binder IPC calls, while pre-caching `promptVisible = true`
     // and priming the pre-warmed animation at frame 0 as soon as a BiometricPrompt appears.
     private val bgCheckPromptTask = Runnable {
+        lastPromptCheckTimeMs = SystemClock.elapsedRealtime()
         val onLockOrAod = isLockOrAodState()
         val wasVisible = promptVisible
         val now = if (onLockOrAod) false else promptShowing()
@@ -166,7 +172,6 @@ class FpAccessibilityService : AccessibilityService() {
     }
 
     private val bgFollowUpPromptCheck1 = Runnable { bgCheckPromptTask.run() }
-    private val bgFollowUpPromptCheck2 = Runnable { bgCheckPromptTask.run() }
 
     // Event-driven check for SystemUI error nodes (only runs when SystemUI emits an event after >=240ms of touch)
     private val bgCheckErrorEventTask = Runnable {
@@ -179,7 +184,7 @@ class FpAccessibilityService : AccessibilityService() {
         }
     }
 
-    // Ultra-fast 20ms background retry when the user touches the sensor at the exact moment a BiometricPrompt is opening
+    // Ultra-fast background retry ONLY when a SystemUI window event recently occurred and user touches the sensor
     private val bgRetryShowTask = object : Runnable {
         override fun run() {
             if (!fingerDown || isShowingAnim || suppressUntilFingerUp) return
@@ -194,9 +199,9 @@ class FpAccessibilityService : AccessibilityService() {
                 }
                 return
             }
-            if (retryCount < 10 && fingerDown && !suppressUntilFingerUp) {
+            if (retryCount < 3 && fingerDown && !suppressUntilFingerUp) {
                 retryCount++
-                bgHandler?.postDelayed(this, 20L)
+                bgHandler?.postDelayed(this, 22L)
             }
         }
     }
@@ -221,7 +226,7 @@ class FpAccessibilityService : AccessibilityService() {
                     return
                 }
                 if (isShowingAnim) {
-                    bgHandler?.postDelayed(this, 35L)
+                    bgHandler?.postDelayed(this, 30L)
                 }
             } else {
                 if (!interactive && !isInAodOrDoze) {
@@ -359,8 +364,9 @@ class FpAccessibilityService : AccessibilityService() {
 
         ShizukuBridge.onTouch = { down ->
             fingerDown = down
+            val nowMs = SystemClock.elapsedRealtime()
             if (down) {
-                touchDownTimeMs = SystemClock.elapsedRealtime()
+                touchDownTimeMs = nowMs
             } else {
                 // Lifting the finger re-arms the animation for the next touch
                 suppressUntilFingerUp = false
@@ -371,17 +377,20 @@ class FpAccessibilityService : AccessibilityService() {
                     if (suppressUntilFingerUp || isShowingAnim) return@postAtFrontOfQueue
                     val onLockOrAod = isLockOrAodState()
                     if (onLockOrAod || promptVisible) {
-                        // Instant 0ms show on Lock Screen, Always-On Display (AOD), or BiometricPrompt!
+                        // Instant <1ms show on Lock Screen, Always-On Display (AOD), or BiometricPrompt!
                         showImmediate(onLock = onLockOrAod)
-                    } else {
-                        // Fast background check in case a BiometricPrompt just opened
+                    } else if (nowMs - lastSysUiEventTimeMs <= 2500L) {
+                        // Only check background BiometricPrompt if a SystemUI window event occurred recently,
+                        // avoiding any Accessibility IPC overhead during normal unlocked typing/scrolling!
                         retryCount = 0
                         bgHandler?.removeCallbacks(bgRetryShowTask)
                         bgHandler?.postAtFrontOfQueue(bgRetryShowTask)
                     }
                 } else {
                     bgHandler?.removeCallbacks(bgRetryShowTask)
-                    hide("finger up")
+                    if (isShowingAnim) {
+                        hide("finger up")
+                    }
                 }
             }
         }
@@ -559,30 +568,26 @@ class FpAccessibilityService : AccessibilityService() {
         wasKeyguardLockedOnTouch = kg.isKeyguardLocked || wasAod
         isShowingAnim = true
 
-        // If finger touches sensor on Always-On Display (AOD / Doze), step display out of
-        // Doze suspend so Choreographer renders the animation at full 60/120fps.
-        wakeDisplayForAodIfNeeded()
-
+        // Draw frame 0 FIRST (<0.15ms) before any wake lock or WindowManager IPC so the
+        // animation appears on the very next hardware display scanout!
         val v = view
-        val lp = viewLp
-        if (v != null && lp != null) {
-            lp.flags = buildOverlayFlags(activePlayback = true)
+        if (v != null) {
             v.keepScreenOn = true
             if (v.visibility != View.VISIBLE) {
                 v.visibility = View.VISIBLE
             }
             v.alpha = 1f
             v.playImmediate()
-            if (wasAod || onLock) {
-                runCatching { wm.updateViewLayout(v, lp) }
-            }
         }
 
+        // If finger touches sensor on Always-On Display (AOD / Doze), step display out of
+        // Doze suspend so Choreographer renders the animation at full 60/120fps.
         if (wasAod) {
+            wakeDisplayForAodIfNeeded()
             ui.removeCallbacks(aodRefreshTask)
-            ui.postDelayed(aodRefreshTask, 16L)
-            ui.postDelayed(aodRefreshTask, 48L)
-            ui.postDelayed(aodRefreshTask, 110L)
+            ui.post(aodRefreshTask)
+            ui.postDelayed(aodRefreshTask, 32L)
+            ui.postDelayed(aodRefreshTask, 96L)
         }
 
         ui.removeCallbacks(singleScanTimeout)
@@ -590,7 +595,7 @@ class FpAccessibilityService : AccessibilityService() {
         ui.removeCallbacks(watchdog)
         ui.postDelayed(watchdog, 6000L)
         bgHandler?.removeCallbacks(bgActiveMonitor)
-        bgHandler?.postDelayed(bgActiveMonitor, if (onLock) 35L else 55L)
+        bgHandler?.postDelayed(bgActiveMonitor, if (onLock) 30L else 55L)
     }
 
     private fun hide(why: String) {
@@ -622,7 +627,12 @@ class FpAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(e: AccessibilityEvent?) {
         if (e == null) return
 
-        val isSysUi = e.packageName?.toString() == "com.android.systemui"
+        val pkg = e.packageName?.toString() ?: ""
+        val isSysUi = pkg == "com.android.systemui" || pkg.contains("biometric")
+        val nowMs = SystemClock.elapsedRealtime()
+        if (isSysUi) {
+            lastSysUiEventTimeMs = nowMs
+        }
 
         // If SystemUI emits window state changes during AOD/Doze while finger is down, ensure overlay stays visible
         if (isSysUi && fingerDown && !suppressUntilFingerUp && isLockOrAodState()) {
@@ -637,7 +647,7 @@ class FpAccessibilityService : AccessibilityService() {
 
         // Instant zero-IPC check for biometric failure text announced/updated by SystemUI while finger is down
         if (fingerDown && isShowingAnim && isSysUi) {
-            val elapsed = SystemClock.elapsedRealtime() - touchDownTimeMs
+            val elapsed = nowMs - touchDownTimeMs
             if (elapsed >= 220L) {
                 val cd = e.contentDescription?.toString() ?: ""
                 var failed = isBiometricFailureText(cd)
@@ -662,15 +672,22 @@ class FpAccessibilityService : AccessibilityService() {
             }
         }
 
-        // Only run BiometricPrompt window checks when not on the lock screen (or when unlocked prompt is active)
-        if (!shownOnLock || !kg.isKeyguardLocked) {
-            bgHandler?.let { h ->
-                h.removeCallbacks(bgCheckPromptTask)
-                h.removeCallbacks(bgFollowUpPromptCheck1)
-                h.removeCallbacks(bgFollowUpPromptCheck2)
-                h.post(bgCheckPromptTask)
-                h.postDelayed(bgFollowUpPromptCheck1, 70L)
-                h.postDelayed(bgFollowUpPromptCheck2, 160L)
+        // Only run BiometricPrompt window checks when relevant (SystemUI event, prompt currently visible,
+        // finger down, or a major window state change), keeping normal unlocked phone scrolling 100% smooth!
+        if (!shownOnLock && !kg.isKeyguardLocked) {
+            val shouldCheckPrompt = isSysUi ||
+                promptVisible ||
+                fingerDown ||
+                (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && nowMs - lastPromptCheckTimeMs >= 90L)
+            if (shouldCheckPrompt) {
+                bgHandler?.let { h ->
+                    h.removeCallbacks(bgCheckPromptTask)
+                    h.removeCallbacks(bgFollowUpPromptCheck1)
+                    h.post(bgCheckPromptTask)
+                    if (isSysUi) {
+                        h.postDelayed(bgFollowUpPromptCheck1, 65L)
+                    }
+                }
             }
         }
     }

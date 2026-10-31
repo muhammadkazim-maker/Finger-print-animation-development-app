@@ -31,12 +31,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.AddPhotoAlternate
-import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
-import androidx.compose.material.icons.filled.CollectionsBookmark
-import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -53,6 +49,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -113,6 +110,10 @@ fun ChangeAnimationScreen(
     var myCollection by remember { mutableStateOf(MyCollectionStore.loadAll(context)) }
 
     val aiUiState by aiViewModel.uiState.collectAsStateWithLifecycle()
+
+    LaunchedEffect(Unit) {
+        ProVideoFrameCache.prewarmGalleryThumbnailsAsync(context, count = 8)
+    }
 
     val proVideos = remember { AnimationCatalog.proVideoDesigns }
     val proVideoCategory = remember(proVideos) {
@@ -465,7 +466,11 @@ fun ChangeAnimationScreen(
                             verticalArrangement = Arrangement.spacedBy(12.dp),
                             contentPadding = PaddingValues(bottom = 12.dp)
                         ) {
-                            items(searchResults, key = { it.design.id }) { item ->
+                            items(
+                                items = searchResults,
+                                key = { it.design.id },
+                                contentType = { "design_grid_card" }
+                            ) { item ->
                                 DesignGridCard(
                                     category = item.category,
                                     design = item.design,
@@ -707,7 +712,11 @@ fun ChangeAnimationScreen(
                                 }
                             }
 
-                            items(categories, key = { it.id }) { category ->
+                            items(
+                                items = categories,
+                                key = { it.id },
+                                contentType = { "category_block_card" }
+                            ) { category ->
                                 val previewDesign = category.designs.first()
                                 val accentColor = Color(category.accentHex)
                                 val secondaryColor = Color(category.secondaryHex)
@@ -874,7 +883,11 @@ fun ChangeAnimationScreen(
                             verticalArrangement = Arrangement.spacedBy(12.dp),
                             contentPadding = PaddingValues(bottom = 12.dp)
                         ) {
-                            items(currentCat.designs, key = { it.id }) { design ->
+                            items(
+                                items = currentCat.designs,
+                                key = { it.id },
+                                contentType = { "design_grid_card" }
+                            ) { design ->
                                 DesignGridCard(
                                     category = currentCat,
                                     design = design,
@@ -1502,7 +1515,11 @@ private fun MyCollectionSection(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
                 contentPadding = PaddingValues(bottom = 12.dp)
             ) {
-                items(items, key = { it.id }) { item ->
+                items(
+                    items = items,
+                    key = { it.id },
+                    contentType = { "collection_grid_card" }
+                ) { item ->
                     val isSelected = activeAnimId == item.id
                     val accentColor = Color(item.primaryHex)
 
@@ -1786,7 +1803,11 @@ private fun ProVideoFolderSection(
             verticalArrangement = Arrangement.spacedBy(12.dp),
             contentPadding = PaddingValues(bottom = 12.dp)
         ) {
-            items(items, key = { it.id }) { item ->
+            items(
+                items = items,
+                key = { it.id },
+                contentType = { "pro_video_grid_card" }
+            ) { item ->
                 val isSelected = activeAnimId == item.id
                 val accentColor = Color(item.accentHex)
 
@@ -1900,14 +1921,15 @@ private fun LoopingAssetVideoPreview(
     AndroidView(
         factory = { ctx ->
             LoopingAssetVideoView(ctx).apply {
+                preferCompactDecode = true
                 tag = assetPath
-                setVideoAsset(assetPath, autoStart = true, speed = speed)
+                setVideoAsset(assetPath, autoStart = true, speed = speed, preferCompact = true)
             }
         },
         update = { videoView ->
             if (videoView.tag != assetPath) {
                 videoView.tag = assetPath
-                videoView.setVideoAsset(assetPath, autoStart = true, speed = speed)
+                videoView.setVideoAsset(assetPath, autoStart = true, speed = speed, preferCompact = true)
             } else {
                 videoView.setPlaybackSpeed(speed)
             }
@@ -1928,7 +1950,8 @@ private fun applyProVideoItem(
     Prefs.setSelectedAnim(context, item.id, label)
     Prefs.setSelectedVideoAsset(context, item.assetPath)
     Prefs.setAnimStepDone(context, true)
-    ProVideoFrameCache.prewarmAsync(context, item.assetPath)
+    ProVideoFrameCache.pinActiveOverlayAtlas(context, item.assetPath)
+    ProVideoFrameCache.prewarmAsync(context, item.assetPath, preferCompact = false)
     LottiePrewarmCache.updateActiveAnimationAndPrewarm(context, fallbackDesign.lottieJson)
     FpAccessibilityService.instance?.reload()
 }
@@ -1944,6 +1967,7 @@ private fun applyDesign(
     Prefs.setSelectedAnim(context, design.id, label)
     Prefs.setSelectedVideoAsset(context, null)
     Prefs.setAnimStepDone(context, true)
+    ProVideoFrameCache.pinActiveOverlayAtlas(context, null)
     LottiePrewarmCache.updateActiveAnimationAndPrewarm(context, json)
     FpAccessibilityService.instance?.reload()
 }
@@ -1958,6 +1982,7 @@ private fun applySavedAiDesign(
     Prefs.setSelectedAnim(context, saved.id, label)
     Prefs.setSelectedVideoAsset(context, null)
     Prefs.setAnimStepDone(context, true)
+    ProVideoFrameCache.pinActiveOverlayAtlas(context, null)
     LottiePrewarmCache.updateActiveAnimationAndPrewarm(context, json)
     FpAccessibilityService.instance?.reload()
 }

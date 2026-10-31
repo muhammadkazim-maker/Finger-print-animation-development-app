@@ -112,8 +112,8 @@ object ShizukuBridge {
         if (!::app.isInitialized) return
         val c = Prefs.load(app)
         try {
-            // High-sensitivity radius matching the full calibrated sensor area + thumb edge contact
-            val radius = (c.size * 0.68f).coerceIn(0.10f, 0.30f)
+            // High-sensitivity radius matching the full calibrated sensor area + initial thumb edge contact
+            val radius = (c.size * 0.74f).coerceIn(0.11f, 0.32f)
             service?.setZone(c.cx, c.cy, radius)
         } catch (e: Exception) {
             Log.d(TAG, "applyZone error: ${e.message}")

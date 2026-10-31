@@ -30,7 +30,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -336,6 +335,9 @@ fun FpAnimatorRoot() {
                         onOpenChangeAnimation = {
                             screenMode = ScreenMode.CHANGE_ANIMATION
                         },
+                        onSkipToMain = {
+                            screenMode = ScreenMode.MAIN
+                        },
                         modifier = Modifier.padding(padding)
                     )
                 }
@@ -396,6 +398,7 @@ private fun SetupWizardScreen(
     onAdvanceStep: (Int) -> Unit,
     onImportJson: () -> Unit,
     onOpenChangeAnimation: () -> Unit = {},
+    onSkipToMain: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -684,6 +687,15 @@ private fun SetupWizardScreen(
                 .testTag("wizard_change_animation_button")
         ) {
             Text("Change / Create Animation")
+        }
+        Spacer(modifier = Modifier.height(10.dp))
+        OutlinedButton(
+            onClick = onSkipToMain,
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("wizard_skip_to_main_button")
+        ) {
+            Text("Skip Setup for Now (Open Dashboard)")
         }
     }
 }
