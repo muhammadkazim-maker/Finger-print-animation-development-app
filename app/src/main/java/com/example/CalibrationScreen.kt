@@ -70,8 +70,7 @@ fun CalibrationScreen(
     val view = LocalView.current
     val density = LocalDensity.current
 
-    val wm = remember { context.getSystemService(WindowManager::class.java) }
-    val bounds = remember { wm.currentWindowMetrics.bounds }
+    val bounds = remember { Prefs.getRealDisplayBounds(context) }
     val displayWidth = bounds.width().coerceAtLeast(1).toFloat()
     val displayHeight = bounds.height().coerceAtLeast(1).toFloat()
 
@@ -162,12 +161,41 @@ fun CalibrationScreen(
             }
 
             Canvas(modifier = Modifier.fillMaxSize()) {
-                val r = this.size.minDimension / 2f
+                val rOuter = this.size.minDimension / 2f
+                val centerOffset = Offset(this.size.width / 2f, this.size.height / 2f)
+                val rInner = rOuter * (initial.sensorSize / size.coerceAtLeast(0.01f)).coerceIn(0.1f, 0.95f)
+
+                // Outer Circle: Animation Size boundary
                 drawCircle(
                     color = Color(0xFF00F5FF),
-                    radius = r,
-                    center = Offset(this.size.width / 2f, this.size.height / 2f),
-                    style = Stroke(width = 4f)
+                    radius = rOuter,
+                    center = centerOffset,
+                    style = Stroke(width = 3.5f)
+                )
+
+                // Inner Sub-Circle: Physical Fingerprint Sensor Trigger Zone
+                drawCircle(
+                    color = Color(0x3300E676),
+                    radius = rInner,
+                    center = centerOffset
+                )
+                drawCircle(
+                    color = Color(0xFF00E676),
+                    radius = rInner,
+                    center = centerOffset,
+                    style = Stroke(width = 3.5f)
+                )
+                drawLine(
+                    color = Color(0xAA00E676),
+                    start = Offset(centerOffset.x - rInner * 0.45f, centerOffset.y),
+                    end = Offset(centerOffset.x + rInner * 0.45f, centerOffset.y),
+                    strokeWidth = 2f
+                )
+                drawLine(
+                    color = Color(0xAA00E676),
+                    start = Offset(centerOffset.x, centerOffset.y - rInner * 0.45f),
+                    end = Offset(centerOffset.x, centerOffset.y + rInner * 0.45f),
+                    strokeWidth = 2f
                 )
             }
         }
@@ -207,8 +235,8 @@ fun CalibrationScreen(
                 Text(text = "Size", color = Color.White)
                 Slider(
                     value = size,
-                    onValueChange = { size = it.coerceIn(0.15f, 0.50f) },
-                    valueRange = 0.15f..0.50f,
+                    onValueChange = { size = it.coerceIn(0.15f, 1.0f) },
+                    valueRange = 0.15f..1.0f,
                     modifier = Modifier
                         .weight(1f)
                         .testTag("size_slider")
@@ -313,7 +341,8 @@ fun CalibrationScreen(
 
                 Button(
                     onClick = {
-                        Prefs.save(context, Calib(cx, cy, size, initial.speed))
+                        Prefs.save(context, Calib(cx, cy, size, initial.speed, initial.sensorSize))
+                        ShizukuBridge.applyZone()
                         FpAccessibilityService.instance?.reload()
                         onSaved()
                     },

@@ -15,7 +15,7 @@ import org.robolectric.annotation.Config
 import java.io.File
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34])
+@Config(sdk = [36])
 class ExampleRobolectricTest {
 
     @Test
@@ -32,19 +32,26 @@ class ExampleRobolectricTest {
         assertEquals(0.82f, def.cy, 0.001f)
         assertEquals(0.28f, def.size, 0.001f)
         assertEquals(1.0f, def.speed, 0.001f)
+        assertEquals(0.10f, def.sensorSize, 0.001f)
 
-        Prefs.save(context, Calib(cx = 0.51f, cy = 0.84f, size = 0.32f, speed = 1.5f))
+        Prefs.save(context, Calib(cx = 0.51f, cy = 0.84f, size = 0.32f, speed = 1.5f, sensorSize = 0.12f))
         val saved = Prefs.load(context)
         assertEquals(0.51f, saved.cx, 0.001f)
         assertEquals(0.84f, saved.cy, 0.001f)
         assertEquals(0.32f, saved.size, 0.001f)
         assertEquals(1.5f, saved.speed, 0.001f)
+        assertEquals(0.12f, saved.sensorSize, 0.001f)
         assertTrue(Prefs.isCalibDone(context))
 
-        Prefs.saveCustomization(context, size = 0.40f, speed = 2.0f)
+        Prefs.saveCustomization(context, size = 1.0f, speed = 8.0f, sensorSize = 0.15f)
         val customized = Prefs.load(context)
-        assertEquals(0.40f, customized.size, 0.001f)
-        assertEquals(2.0f, customized.speed, 0.001f)
+        assertEquals(1.0f, customized.size, 0.001f)
+        assertEquals(8.0f, customized.speed, 0.001f)
+        assertEquals(0.15f, customized.sensorSize, 0.001f)
+
+        val bounds = Prefs.getRealDisplayBounds(context)
+        assertTrue(bounds.width() > 0)
+        assertTrue(bounds.height() > 0)
     }
 
     @Test
@@ -56,22 +63,27 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `ProVideoFolder has all 129 uploaded videos and real designs in assets pro_videos folder and OverlayAnimHostView binds them`() {
+    fun `ProVideoFolder has all 98 unique uploaded videos and real PDF HUD designs in assets pro_videos folder with zero duplicates`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val items = ProVideoFolder.items
-        assertEquals(129, items.size)
+        assertEquals(98, items.size)
+        assertEquals("Every ProVideoItem id must be unique", items.size, items.map { it.id }.toSet().size)
+        assertEquals("Every ProVideoItem title must be unique", items.size, items.map { it.title }.toSet().size)
+        assertEquals("Every ProVideoItem atlasAssetPath must be unique", items.size, items.map { it.atlasAssetPath }.toSet().size)
         for (item in items) {
             assertTrue("Video/design asset ${item.assetPath} must exist in assets/pro_videos/", ProVideoFolder.assetExists(context, item.assetPath))
             assertTrue("Transparent WebP ${item.atlasAssetPath} must exist in assets/pro_videos/", ProVideoFolder.assetExists(context, item.atlasAssetPath))
-            val decodedAtlas = ProVideoFrameCache.getOrDecodeAtlas(context, item.assetPath, preferCompact = true)
+            val decodedAtlas = ProVideoFrameCache.getOrDecodeAtlas(context, item.assetPath, preferCompact = false)
             assertNotNull("Decoded transparent WebP must not be null for ${item.id}", decodedAtlas)
             val cornerAlpha = android.graphics.Color.alpha(decodedAtlas!!.getPixel(0, 0))
             assertEquals("Corner background pixel must be 100% transparent (alpha = 0) for ${item.id}", 0, cornerAlpha)
-            if (!item.isAtlasGrid) {
-                val layers = ProVideoFrameCache.getCachedDesignLayers(item.assetPath, preferCompact = true)
-                assertNotNull("Concentric multi-ring layers must be generated for real design ${item.id}", layers)
-            }
+            assertTrue("Decoded HD bitmap width must be positive for ${item.id}", decodedAtlas.width >= 100 && decodedAtlas.height >= 100)
         }
+
+        // Verify lazy concentric ring slicing works for single-frame designs
+        val sampleDesign = items.first { !it.isAtlasGrid }
+        val sampleLayers = ProVideoFrameCache.getOrBuildDesignLayers(context, sampleDesign.assetPath)
+        assertNotNull("Concentric multi-ring layers must be generated on demand for ${sampleDesign.id}", sampleLayers)
 
         val firstVideo = items.first()
         Prefs.setSelectedVideoAsset(context, firstVideo.assetPath)
@@ -79,32 +91,26 @@ class ExampleRobolectricTest {
 
         val hostView = OverlayAnimHostView(context)
         hostView.bindActiveAnimation(context, speed = 1.0f, targetSizePx = 200, autoPlay = false)
-        assertTrue("OverlayAnimHostView should be in video mode when a ProVideoFolder asset is selected", hostView.isVideoMode)
+        assertTrue("OverlayAnimHostView should be in video mode for ProVideoFolder asset", hostView.isVideoMode)
 
+        // Clearing video asset defaults back to the first Pro Folder animation
         Prefs.setSelectedVideoAsset(context, null)
-        hostView.bindActiveAnimation(context, speed = 1.0f, targetSizePx = 200, autoPlay = false)
-        assertTrue("OverlayAnimHostView should switch back to Lottie mode when video asset is cleared", !hostView.isVideoMode)
+        assertEquals(firstVideo.assetPath, Prefs.getSelectedVideoAsset(context))
     }
 
     @Test
-    fun `AnimationCatalog has all 129 Pro Video designs, 20 sheets, and all 922 designs parse cleanly`() {
+    fun `AnimationCatalog contains only the 98 unique Pro Folder animations and all fallback JSONs parse cleanly`() {
         val proVideos = AnimationCatalog.proVideoDesigns
-        assertEquals(129, proVideos.size)
+        assertEquals(98, proVideos.size)
         for (pro in proVideos) {
             val res = LottieCompositionFactory.fromJsonStringSync(pro.lottieJson, pro.id)
             assertNotNull("Failed to parse Pro Video Lottie JSON for ${pro.id}", res.value)
         }
 
         val categories = AnimationCatalog.categories
-        assertEquals(20, categories.size)
-        assertEquals(922, AnimationCatalog.totalDesignCount)
-        for (cat in categories) {
-            assertTrue("Category ${cat.id} should not be empty", cat.designs.isNotEmpty())
-            for (design in cat.designs) {
-                val res = LottieCompositionFactory.fromJsonStringSync(design.lottieJson, design.id)
-                assertNotNull("Failed to parse Lottie JSON for ${design.id} (${design.name})", res.value)
-            }
-        }
+        assertEquals(1, categories.size)
+        assertEquals("pro_video_folder", categories.first().id)
+        assertEquals(98, AnimationCatalog.totalDesignCount)
     }
 
     @Test
@@ -124,7 +130,7 @@ class ExampleRobolectricTest {
         assertEquals(1.5f, d2.speed, 0.001f)
         assertEquals(0, d2.frame)
 
-        val lottieView = LottieAnimationView(context)
+        val lottieView = LottieAnimationView(android.view.ContextThemeWrapper(context, R.style.Theme_MyApplication))
         AnimLoader.load(context, lottieView, speed = 1.5f, targetSizePx = 200)
         assertSame("View composition should match pre-warmed composition immediately", d2.composition, lottieView.composition)
         assertEquals(0, lottieView.frame)

@@ -32,10 +32,16 @@ import kotlin.math.sin
 enum class ProMotionProfile {
     ATLAS_VIDEO,
     SPEEDOMETER_HUD,
-    STAR_RADAR_GRID,
-    CYBER_SEGMENTED_HUD,
-    ARMILLARY_3D_GYRO,
-    PLASMA_VORTEX_PORTAL
+    HUD_RETICLE_CROSSHAIRS,
+    SPIROGRAPH_BRAID_TORUS,
+    ELECTRIC_PLASMA_LIGHTNING,
+    CONTINUOUS_WAVE_TORUS,
+    ORBITAL_STARFIELD_RING,
+    POLYGON_APERTURE_IRIS,
+    EQUALIZER_WAVEFORM_HUD,
+    CYBER_PCB_CIRCUIT,
+    STAR_WAVE_CONTOUR,
+    BRAIDED_LATTICE_DOTS
 }
 
 data class ProVideoItem(
@@ -49,14 +55,13 @@ data class ProVideoItem(
     val accentHex: Long,
     val fallbackLottieDesignId: String,
     val isAtlasGrid: Boolean = false,
-    val motionProfile: ProMotionProfile = ProMotionProfile.CYBER_SEGMENTED_HUD
+    val motionProfile: ProMotionProfile = ProMotionProfile.HUD_RETICLE_CROSSHAIRS
 )
 
 /**
  * Pre-decomposed concentric ring bitmaps of a real uploaded design (`innerCore + midRing + outerRing == original`).
- * Created once on the background decode thread using smooth [RadialGradient] + [PorterDuff.Mode.DST_IN] feathering
- * and uploaded to the GPU via [Bitmap.prepareToDraw], enabling 120fps multi-ring counter-rotation and additive
- * HDR bloom in [LoopingAssetVideoView.onDraw] with zero per-frame allocations or clip-path overhead.
+ * Created only along natural empty radial gaps (or kept unified for continuous 1-body wave/star/lightning designs)
+ * so not a single line, polygon edge, wave ribbon, or lightning bolt is ever torn or distorted.
  */
 class ProDesignLayers(
     val fullBitmap: Bitmap,
@@ -68,10 +73,15 @@ class ProDesignLayers(
         get() = fullBitmap.isRecycled || innerCore.isRecycled || midRing.isRecycled || outerRing.isRecycled
 
     val allocationKb: Int
-        get() = ((fullBitmap.allocationByteCount +
-            innerCore.allocationByteCount +
-            midRing.allocationByteCount +
-            outerRing.allocationByteCount) / 1024).coerceAtLeast(1)
+        get() {
+            var totalBytes = fullBitmap.allocationByteCount
+            if (innerCore !== fullBitmap) totalBytes += innerCore.allocationByteCount
+            if (midRing !== fullBitmap && midRing !== innerCore) totalBytes += midRing.allocationByteCount
+            if (outerRing !== fullBitmap && outerRing !== innerCore && outerRing !== midRing) {
+                totalBytes += outerRing.allocationByteCount
+            }
+            return (totalBytes / 1024).coerceAtLeast(1)
+        }
 }
 
 object ProVideoFolder {
@@ -79,8 +89,8 @@ object ProVideoFolder {
     const val FOLDER_TITLE = "Pro Video & Real Designs Folder"
 
     private data class ProDesignSpec(
-        val designNum: Int,
-        val slug: String,
+        val idSlug: String,
+        val assetPath: String,
         val title: String,
         val subtitle: String,
         val badge: String,
@@ -88,137 +98,183 @@ object ProVideoFolder {
         val profile: ProMotionProfile
     )
 
-    private val generatedProDesignSpecs: List<ProDesignSpec> by lazy {
-        val themeNames = arrayOf(
-            "Quantum Cyber HUD",
-            "Plasma Vortex Ring",
-            "Biometric Star Radar",
-            "3D Armillary Gyro",
-            "Ultraviolet Neon Portal",
-            "Emerald Matrix Scanner",
-            "Solar Corona Reactor",
-            "Cryo Filament Helix"
+    private val featuredRealDesignSpecs: List<ProDesignSpec> by lazy {
+        listOf(
+            ProDesignSpec(
+                idSlug = "featured_001_star_radar",
+                assetPath = "pro_videos/featured_001.webp",
+                title = "Sapphire 12-Spoke Starlight Radar",
+                subtitle = "Real uploaded design: 12-spoke sapphire radar grid, perimeter star flares & blazing cyan core",
+                badge = "Real Design #28",
+                accentHex = 0xFF00B0FFL,
+                profile = ProMotionProfile.STAR_WAVE_CONTOUR
+            ),
+            ProDesignSpec(
+                idSlug = "featured_002_cyan_segmented_hud",
+                assetPath = "pro_videos/featured_002.webp",
+                title = "Electric Cyan Segmented HUD Ring",
+                subtitle = "Real uploaded design: counter-rotating cyan HUD blocks, 44-dot inner ring & 4 glowing nodes",
+                badge = "Real Design #29",
+                accentHex = 0xFF00E5FFL,
+                profile = ProMotionProfile.HUD_RETICLE_CROSSHAIRS
+            ),
+            ProDesignSpec(
+                idSlug = "featured_003_violet_concentric_hud",
+                assetPath = "pro_videos/featured_003.webp",
+                title = "Ultraviolet Concentric Vernier HUD",
+                subtitle = "Real uploaded design: neon purple-violet concentric HUD rings, cardinal crosshairs & dot bezel",
+                badge = "Real Design #30",
+                accentHex = 0xFFB388FFL,
+                profile = ProMotionProfile.HUD_RETICLE_CROSSHAIRS
+            ),
+            ProDesignSpec(
+                idSlug = "featured_004_golden_armillary_gyro",
+                assetPath = "pro_videos/featured_004.webp",
+                title = "Golden 3D Armillary Gyroscope Sphere",
+                subtitle = "Real uploaded design: 3D tilted golden orbital ribbons, 4 metallic cardinal spheres & solar core",
+                badge = "Real Design #31",
+                accentHex = 0xFFFFD740L,
+                profile = ProMotionProfile.CONTINUOUS_WAVE_TORUS
+            ),
+            ProDesignSpec(
+                idSlug = "featured_005_crimson_silk_torus",
+                assetPath = "pro_videos/featured_005.webp",
+                title = "Crimson-Gold 3D Silk Wave Torus",
+                subtitle = "Real uploaded design: weaving translucent orange-red silk ribbon waves & floating ember sparks",
+                badge = "Real Design #32",
+                accentHex = 0xFFFF3D00L,
+                profile = ProMotionProfile.CONTINUOUS_WAVE_TORUS
+            ),
+            ProDesignSpec(
+                idSlug = "featured_006_cobalt_violet_vortex",
+                assetPath = "pro_videos/featured_006.webp",
+                title = "Cobalt & Violet Particle Vortex Ring",
+                subtitle = "Real uploaded design: swirling electric blue & neon violet particle stream trails around dark core",
+                badge = "Real Design #33",
+                accentHex = 0xFF651FFFL,
+                profile = ProMotionProfile.CONTINUOUS_WAVE_TORUS
+            ),
+            ProDesignSpec(
+                idSlug = "featured_007_molten_gold_splash",
+                assetPath = "pro_videos/featured_007.webp",
+                title = "Molten Liquid Gold 3D Splash Ring",
+                subtitle = "Real uploaded design: glossy 3D metallic molten gold wave crests & splashing golden droplets",
+                badge = "Real Design #34",
+                accentHex = 0xFFFFD740L,
+                profile = ProMotionProfile.CONTINUOUS_WAVE_TORUS
+            ),
+            ProDesignSpec(
+                idSlug = "featured_008_mechanical_iris",
+                assetPath = "pro_videos/featured_008.webp",
+                title = "Mechanical 12-Blade Aperture Iris",
+                subtitle = "Real uploaded design: precision gunmetal & cyan 12-blade camera iris aperture with glowing core",
+                badge = "Real Design #35",
+                accentHex = 0xFF00E5FFL,
+                profile = ProMotionProfile.POLYGON_APERTURE_IRIS
+            ),
+            ProDesignSpec(
+                idSlug = "featured_009_violet_ribbon_portal",
+                assetPath = "pro_videos/featured_009.webp",
+                title = "Violet & Magenta Silk Ribbon Portal",
+                subtitle = "Real uploaded design: flowing 3D violet, magenta & cyan silk light waves swirling around core",
+                badge = "Real Design #36",
+                accentHex = 0xFFE040FBL,
+                profile = ProMotionProfile.CONTINUOUS_WAVE_TORUS
+            ),
+            ProDesignSpec(
+                idSlug = "featured_010_emerald_particle_portal",
+                assetPath = "pro_videos/featured_010.webp",
+                title = "Bioluminescent Emerald Particle Portal",
+                subtitle = "Real uploaded design: golden-ratio spiral of glowing emerald & mint quantum particles",
+                badge = "Real Design #37",
+                accentHex = 0xFF00E676L,
+                profile = ProMotionProfile.ORBITAL_STARFIELD_RING
+            ),
+            ProDesignSpec(
+                idSlug = "featured_011_icy_filament_vortex",
+                assetPath = "pro_videos/featured_011.webp",
+                title = "Cryo-Cyan Icy Filament Vortex",
+                subtitle = "Real uploaded design: high-velocity ice-blue & white curved radial vortex filaments",
+                badge = "Real Design #38",
+                accentHex = 0xFF80D8FFL,
+                profile = ProMotionProfile.CONTINUOUS_WAVE_TORUS
+            )
         )
-        val themeSubtitles = arrayOf(
-            "Counter-rotating cyan HUD vernier bezel, segmented data arcs & biometric ridge core",
-            "Swirling neon magenta-cyan plasma filaments with counter-spinning optical vortex core",
-            "Precision polar radar grid with pulsing perimeter star-nodes & live biometric scanner",
-            "3D gimballed golden-cyan orbital rings tumbling around a luminous biometric sensor core",
-            "Electric violet & hot-magenta concentric portal rings with harmonic optical shockwaves",
-            "Bioluminescent emerald dot-matrix telemetry bezel with high-speed counter-rotating ticks",
-            "Blazing solar-gold & cobalt reactor teeth with multi-ring optical laser interference",
-            "Crystalline ice-blue refractive light filaments & counter-spinning cryo biometric core"
+    }
+
+    /**
+     * Exact, as-is circular HUD designs extracted from `Circular_HUD_Animation_Designs_100_Compact (1).pdf`,
+     * strictly deduplicated across the 10 archetypes and 6 distinct color diagonals so no animation ever
+     * appears 2 or 3 times after animating.
+     */
+    private val pdfHudDesignSpecs: List<ProDesignSpec> by lazy {
+        val archetypeNames = arrayOf(
+            "Segmented Crosshair HUD Reticle",      // Arch 1
+            "Guilloche Spirograph Braid Torus",     // Arch 2
+            "High-Voltage Electric Plasma Ring",    // Arch 3
+            "Sinusoidal Harmonic Wave Ribbon",      // Arch 4
+            "Orbital Starlight Particle Cluster",   // Arch 5
+            "Geometric Polygon Aperture Iris",      // Arch 6
+            "Radial Equalizer & Sine Waveform",     // Arch 7
+            "Cybernetic PCB Circuit Trace Matrix",  // Arch 8
+            "Harmonic Star-Wave Contour Reticle",   // Arch 9
+            "Braided Wave Lattice & Stipple Ring"   // Arch 10
         )
-        val themeHexes = longArrayOf(
-            0xFF00E5FFL,
-            0xFFFF4081L,
-            0xFF2979FFL,
-            0xFFFFD740L,
-            0xFFB388FFL,
-            0xFF00E676L,
-            0xFFFF9100L,
-            0xFF18FFFFL
+        val archetypeSubtitles = arrayOf(
+            "Exact PDF HUD Design: counter-rotating inner reticle, segmented telemetry ring & outer satellite crosshairs",
+            "Exact PDF HUD Design: intact guilloche spirograph braided torus with counter-rotating inner optical ring",
+            "Exact PDF HUD Design: intact dual-layer jagged electric lightning arcs with high-voltage plasma surge",
+            "Exact PDF HUD Design: intact multi-ribbon sinusoidal wave ring with glowing energy nodes & harmonic pulse",
+            "Exact PDF HUD Design: orbital starfield particle cluster between ultra-crisp concentric guide arcs",
+            "Exact PDF HUD Design: intact nested geometric polygon aperture iris with counter-rotating outer dot bezel",
+            "Exact PDF HUD Design: rotating radial audio equalizer sunburst around live upright oscilloscope sine wave",
+            "Exact PDF HUD Design: 3 counter-rotating concentric PCB circuit trace bands with glowing solder-pad nodes",
+            "Exact PDF HUD Design: intact nested harmonic star-wave contours wrapping an inner geometric star core",
+            "Exact PDF HUD Design: intact woven wave lattice surrounded by counter-rotating dual stipple dot rings"
         )
-        val themeProfiles = arrayOf(
-            ProMotionProfile.CYBER_SEGMENTED_HUD,
-            ProMotionProfile.PLASMA_VORTEX_PORTAL,
-            ProMotionProfile.STAR_RADAR_GRID,
-            ProMotionProfile.ARMILLARY_3D_GYRO,
-            ProMotionProfile.CYBER_SEGMENTED_HUD,
-            ProMotionProfile.CYBER_SEGMENTED_HUD,
-            ProMotionProfile.ARMILLARY_3D_GYRO,
-            ProMotionProfile.PLASMA_VORTEX_PORTAL
+        val archetypeProfiles = arrayOf(
+            ProMotionProfile.HUD_RETICLE_CROSSHAIRS,   // Arch 1
+            ProMotionProfile.SPIROGRAPH_BRAID_TORUS,   // Arch 2
+            ProMotionProfile.ELECTRIC_PLASMA_LIGHTNING,// Arch 3
+            ProMotionProfile.CONTINUOUS_WAVE_TORUS,    // Arch 4
+            ProMotionProfile.ORBITAL_STARFIELD_RING,   // Arch 5
+            ProMotionProfile.POLYGON_APERTURE_IRIS,    // Arch 6
+            ProMotionProfile.EQUALIZER_WAVEFORM_HUD,   // Arch 7
+            ProMotionProfile.CYBER_PCB_CIRCUIT,        // Arch 8
+            ProMotionProfile.STAR_WAVE_CONTOUR,        // Arch 9
+            ProMotionProfile.BRAIDED_LATTICE_DOTS      // Arch 10
+        )
+        val keptDiags = mapOf(
+            0 to Pair("Electric Cyan", 0xFF00E5FFL),
+            1 to Pair("Cryo Ice-White", 0xFFE0F7FAL),
+            2 to Pair("Crimson Coral", 0xFFFF5252L),
+            3 to Pair("Ultraviolet Purple", 0xFFD500F9L),
+            6 to Pair("Solar Gold", 0xFFFFB300L),
+            9 to Pair("Bioluminescent Emerald", 0xFF00E676L)
         )
 
-        (1..100).map { dNum ->
-            when (dNum) {
-                1 -> ProDesignSpec(
-                    designNum = 1,
-                    slug = "design_001_star_radar",
-                    title = "Sapphire 12-Spoke Starlight Radar",
-                    subtitle = "Exact uploaded design_001: 12-spoke sapphire radar grid, perimeter star flares & blazing cyan core",
-                    badge = "Uploaded Design #001",
-                    accentHex = 0xFF00B0FFL,
-                    profile = ProMotionProfile.STAR_RADAR_GRID
+        val list = ArrayList<ProDesignSpec>(60)
+        for (pdfPage in 1..100) {
+            val archIdx = (pdfPage - 1) % 10
+            val row = (pdfPage - 1) / 10
+            val diag = ((archIdx - row) % 10 + 10) % 10
+            val colorInfo = keptDiags[diag] ?: continue
+            val seqNum = list.size + 1
+            val seqStr = String.format(Locale.US, "%03d", seqNum)
+            val pageStr = String.format(Locale.US, "%03d", pdfPage)
+            list.add(
+                ProDesignSpec(
+                    idSlug = "hud_pdf_${seqStr}_p$pageStr",
+                    assetPath = "pro_videos/hud_pdf_$seqStr.webp",
+                    title = "${colorInfo.first} ${archetypeNames[archIdx]}",
+                    subtitle = "${archetypeSubtitles[archIdx]} (PDF Page #$pageStr)",
+                    badge = "PDF HUD #$pageStr",
+                    accentHex = colorInfo.second,
+                    profile = archetypeProfiles[archIdx]
                 )
-                2 -> ProDesignSpec(
-                    designNum = 2,
-                    slug = "design_002_cyan_segmented_hud",
-                    title = "Electric Cyan Segmented HUD Ring",
-                    subtitle = "Exact uploaded design_002: counter-rotating cyan HUD blocks, 36-dot inner ring & 4 glowing nodes",
-                    badge = "Uploaded Design #002",
-                    accentHex = 0xFF00E5FFL,
-                    profile = ProMotionProfile.CYBER_SEGMENTED_HUD
-                )
-                3 -> ProDesignSpec(
-                    designNum = 3,
-                    slug = "design_003_violet_concentric_hud",
-                    title = "Ultraviolet Concentric Vernier HUD",
-                    subtitle = "Exact uploaded design_003: neon purple-violet concentric HUD rings, cardinal crosshairs & dot bezel",
-                    badge = "Uploaded Design #003",
-                    accentHex = 0xFFB388FFL,
-                    profile = ProMotionProfile.CYBER_SEGMENTED_HUD
-                )
-                4 -> ProDesignSpec(
-                    designNum = 4,
-                    slug = "design_004_golden_armillary_gyro",
-                    title = "Golden 3D Armillary Gyroscope Sphere",
-                    subtitle = "Exact uploaded design_004: 3D tilted golden orbital ribbons, 4 metallic cardinal spheres & solar core",
-                    badge = "Uploaded Design #004",
-                    accentHex = 0xFFFFD740L,
-                    profile = ProMotionProfile.ARMILLARY_3D_GYRO
-                )
-                97 -> ProDesignSpec(
-                    designNum = 97,
-                    slug = "design_097_mechanical_iris",
-                    title = "Mechanical 12-Blade Aperture Iris",
-                    subtitle = "Exact uploaded design_097: precision gunmetal & cyan 12-blade camera iris aperture with glowing core",
-                    badge = "Uploaded Design #097",
-                    accentHex = 0xFF00E5FFL,
-                    profile = ProMotionProfile.CYBER_SEGMENTED_HUD
-                )
-                98 -> ProDesignSpec(
-                    designNum = 98,
-                    slug = "design_098_violet_ribbon_portal",
-                    title = "Violet & Magenta Silk Ribbon Portal",
-                    subtitle = "Exact uploaded design_098: flowing 3D violet, magenta & cyan silk light waves swirling around core",
-                    badge = "Uploaded Design #098",
-                    accentHex = 0xFFE040FBL,
-                    profile = ProMotionProfile.PLASMA_VORTEX_PORTAL
-                )
-                99 -> ProDesignSpec(
-                    designNum = 99,
-                    slug = "design_099_emerald_particle_portal",
-                    title = "Bioluminescent Emerald Particle Portal",
-                    subtitle = "Exact uploaded design_099: golden-ratio spiral of glowing emerald & mint quantum particles",
-                    badge = "Uploaded Design #099",
-                    accentHex = 0xFF00E676L,
-                    profile = ProMotionProfile.PLASMA_VORTEX_PORTAL
-                )
-                100 -> ProDesignSpec(
-                    designNum = 100,
-                    slug = "design_100_icy_filament_vortex",
-                    title = "Cryo-Cyan Icy Filament Vortex",
-                    subtitle = "Exact uploaded design_100: high-velocity ice-blue & white curved radial vortex filaments",
-                    badge = "Uploaded Design #100",
-                    accentHex = 0xFF80D8FFL,
-                    profile = ProMotionProfile.PLASMA_VORTEX_PORTAL
-                )
-                else -> {
-                    val tIdx = (dNum - 5) % themeNames.size
-                    val numStr = String.format(Locale.US, "%03d", dNum)
-                    ProDesignSpec(
-                        designNum = dNum,
-                        slug = "design_$numStr",
-                        title = "Pro ${themeNames[tIdx]} #$numStr",
-                        subtitle = themeSubtitles[tIdx],
-                        badge = "Uploaded Design #$numStr",
-                        accentHex = themeHexes[tIdx],
-                        profile = themeProfiles[tIdx]
-                    )
-                }
-            }
+            )
         }
+        list
     }
 
     val items: List<ProVideoItem> by lazy {
@@ -328,76 +384,63 @@ object ProVideoFolder {
                 motionProfile = ProMotionProfile.SPEEDOMETER_HUD
             ),
             ProVideoItem(
-                id = "folder_video_9_cyber_tachometer_overdrive",
-                index = 9,
-                title = "Cyber Tachometer Overdrive Dual-Spin",
-                subtitle = "Exact uploaded HUD dial with high-speed counter-rotating bezel, turbo red ring & needle sweep",
-                badge = "Real Design #9",
-                assetPath = "pro_videos/video_9_cyber_tachometer_overdrive.mp4",
-                atlasAssetPath = "pro_videos/video_9_cyber_tachometer_overdrive.webp",
-                accentHex = 0xFFFF3D00L,
-                fallbackLottieDesignId = "pro_video_9_cyber_tachometer_overdrive",
-                isAtlasGrid = false,
-                motionProfile = ProMotionProfile.SPEEDOMETER_HUD
-            ),
-            ProVideoItem(
                 id = "folder_video_10_chromatic_starlight_rings",
-                index = 10,
+                index = 9,
                 title = "Chromatic Starlight Vortex Rings",
-                subtitle = "Exact uploaded design: multicolor neon plasma rings with counter-rotating golden starlight core",
-                badge = "Real Design #10",
+                subtitle = "Exact uploaded design: multicolor neon plasma rings with golden starlight core",
+                badge = "Real Design #9",
                 assetPath = "pro_videos/video_10_chromatic_starlight_rings.mp4",
                 atlasAssetPath = "pro_videos/video_10_chromatic_starlight_rings.webp",
                 accentHex = 0xFFFF4081L,
                 fallbackLottieDesignId = "pro_video_10_chromatic_starlight_rings",
                 isAtlasGrid = false,
-                motionProfile = ProMotionProfile.ARMILLARY_3D_GYRO
+                motionProfile = ProMotionProfile.CONTINUOUS_WAVE_TORUS
             ),
             ProVideoItem(
                 id = "folder_video_11_neon_magenta_cyan_portal",
-                index = 11,
+                index = 10,
                 title = "Neon Magenta & Cyan Cyber Portal",
                 subtitle = "Exact uploaded design: glowing hot-pink outer tick ring & electric cyan inner portal ring",
-                badge = "Real Design #11",
+                badge = "Real Design #10",
                 assetPath = "pro_videos/video_11_neon_magenta_cyan_portal.mp4",
                 atlasAssetPath = "pro_videos/video_11_neon_magenta_cyan_portal.webp",
                 accentHex = 0xFFFF00E5L,
                 fallbackLottieDesignId = "pro_video_11_neon_magenta_cyan_portal",
                 isAtlasGrid = false,
-                motionProfile = ProMotionProfile.CYBER_SEGMENTED_HUD
+                motionProfile = ProMotionProfile.HUD_RETICLE_CROSSHAIRS
             ),
             ProVideoItem(
                 id = "folder_video_12_electric_blue_blade_vortex",
-                index = 12,
+                index = 11,
                 title = "Electric Sapphire Blade Vortex",
                 subtitle = "Exact uploaded design: spinning sapphire-blue spiral energy blades with white-hot highlights",
-                badge = "Real Design #12",
+                badge = "Real Design #11",
                 assetPath = "pro_videos/video_12_electric_blue_blade_vortex.mp4",
                 atlasAssetPath = "pro_videos/video_12_electric_blue_blade_vortex.webp",
                 accentHex = 0xFF2979FFL,
                 fallbackLottieDesignId = "pro_video_12_electric_blue_blade_vortex",
                 isAtlasGrid = false,
-                motionProfile = ProMotionProfile.PLASMA_VORTEX_PORTAL
+                motionProfile = ProMotionProfile.CONTINUOUS_WAVE_TORUS
             ),
             ProVideoItem(
                 id = "folder_video_13_cyan_quantum_tech_dial",
-                index = 13,
+                index = 12,
                 title = "Cyan Quantum HUD Tech Dial",
-                subtitle = "Exact uploaded design: 5 counter-rotating concentric cyan HUD gear & tick rings with glowing core",
-                badge = "Real Design #13",
+                subtitle = "Exact uploaded design: counter-rotating concentric cyan HUD gear & tick rings with glowing core",
+                badge = "Real Design #12",
                 assetPath = "pro_videos/video_13_cyan_quantum_tech_dial.mp4",
                 atlasAssetPath = "pro_videos/video_13_cyan_quantum_tech_dial.webp",
                 accentHex = 0xFF00E5FFL,
                 fallbackLottieDesignId = "pro_video_13_cyan_quantum_tech_dial",
                 isAtlasGrid = false,
-                motionProfile = ProMotionProfile.CYBER_SEGMENTED_HUD
+                motionProfile = ProMotionProfile.HUD_RETICLE_CROSSHAIRS
             ),
             ProVideoItem(
                 id = "folder_video_14_cyan_sunwave_tendrils",
-                index = 14,
+                index = 13,
                 title = "Cyan Sunwave Tendrils Ring",
                 subtitle = "Exact uploaded video: organic cyan & teal solar-wave tendrils twisting around a dark core",
-                badge = "Uploaded Video #14",
+                badge = "Uploaded Video #13",
                 assetPath = "pro_videos/video_14_cyan_sunwave_tendrils.mp4",
                 atlasAssetPath = "pro_videos/video_14_cyan_sunwave_tendrils.webp",
                 accentHex = 0xFF00E5FFL,
@@ -407,10 +450,10 @@ object ProVideoFolder {
             ),
             ProVideoItem(
                 id = "folder_video_15_ice_blue_particle_globe",
-                index = 15,
+                index = 14,
                 title = "Ice-Blue 3D Particle Vortex Globe",
                 subtitle = "Exact uploaded video: glowing ice-blue luminous particle vortex sphere swirling in 3D",
-                badge = "Uploaded Video #15",
+                badge = "Uploaded Video #14",
                 assetPath = "pro_videos/video_15_ice_blue_particle_globe.mp4",
                 atlasAssetPath = "pro_videos/video_15_ice_blue_particle_globe.webp",
                 accentHex = 0xFF40C4FFL,
@@ -420,10 +463,10 @@ object ProVideoFolder {
             ),
             ProVideoItem(
                 id = "folder_video_16_cobalt_violet_wave_orb",
-                index = 16,
+                index = 15,
                 title = "Cobalt & Violet 3D Wave Orb",
                 subtitle = "Exact uploaded video: deep cobalt-blue & violet 3D undulating particle wave sphere",
-                badge = "Uploaded Video #16",
+                badge = "Uploaded Video #15",
                 assetPath = "pro_videos/video_16_cobalt_violet_wave_orb.mp4",
                 atlasAssetPath = "pro_videos/video_16_cobalt_violet_wave_orb.webp",
                 accentHex = 0xFF536DFEL,
@@ -433,10 +476,10 @@ object ProVideoFolder {
             ),
             ProVideoItem(
                 id = "folder_video_17_neon_green_cyan_ribbon",
-                index = 17,
+                index = 16,
                 title = "Neon Green & Cyan Ribbon Wave",
                 subtitle = "Exact uploaded video: morphing 3D neon emerald-green & electric-cyan harmonic ribbon ring",
-                badge = "Uploaded Video #17",
+                badge = "Uploaded Video #16",
                 assetPath = "pro_videos/video_17_neon_green_cyan_ribbon.mp4",
                 atlasAssetPath = "pro_videos/video_17_neon_green_cyan_ribbon.webp",
                 accentHex = 0xFF00E676L,
@@ -446,10 +489,10 @@ object ProVideoFolder {
             ),
             ProVideoItem(
                 id = "folder_video_18_magenta_stardust_portal",
-                index = 18,
+                index = 17,
                 title = "Magenta Plasma & Stardust Portal",
                 subtitle = "Exact uploaded video: blazing magenta plasma ring with shimmering blue stardust core",
-                badge = "Uploaded Video #18",
+                badge = "Uploaded Video #17",
                 assetPath = "pro_videos/video_18_magenta_stardust_portal.mp4",
                 atlasAssetPath = "pro_videos/video_18_magenta_stardust_portal.webp",
                 accentHex = 0xFFFF4081L,
@@ -459,10 +502,10 @@ object ProVideoFolder {
             ),
             ProVideoItem(
                 id = "folder_video_19_blue_plasma_energy_core",
-                index = 19,
+                index = 18,
                 title = "Blue Electric Plasma Energy Core",
                 subtitle = "Exact uploaded video: high-voltage blue plasma energy ring with radiating lightning filaments",
-                badge = "Uploaded Video #19",
+                badge = "Uploaded Video #18",
                 assetPath = "pro_videos/video_19_blue_plasma_energy_core.mp4",
                 atlasAssetPath = "pro_videos/video_19_blue_plasma_energy_core.webp",
                 accentHex = 0xFF2979FFL,
@@ -472,10 +515,10 @@ object ProVideoFolder {
             ),
             ProVideoItem(
                 id = "folder_video_20_cyan_purple_silk_orb",
-                index = 20,
+                index = 19,
                 title = "Cyan & Purple 3D Silk Mesh Orb",
                 subtitle = "Exact uploaded video: rotating 3D electric cyan & violet silk particle mesh sphere",
-                badge = "Uploaded Video #20",
+                badge = "Uploaded Video #19",
                 assetPath = "pro_videos/video_20_cyan_purple_silk_orb.mp4",
                 atlasAssetPath = "pro_videos/video_20_cyan_purple_silk_orb.webp",
                 accentHex = 0xFF00E5FFL,
@@ -485,137 +528,123 @@ object ProVideoFolder {
             ),
             ProVideoItem(
                 id = "folder_video_21_polar_star_radar_grid",
-                index = 21,
+                index = 20,
                 title = "Polar Starlight Radar Grid",
-                subtitle = "Exact uploaded design: counter-rotating sapphire polar radar grid with 8 pulsing perimeter star-nodes",
-                badge = "Real Design #21",
+                subtitle = "Exact uploaded design: sapphire polar radar grid with 8 pulsing perimeter star-nodes",
+                badge = "Real Design #20",
                 assetPath = "pro_videos/video_21_polar_star_radar_grid.mp4",
                 atlasAssetPath = "pro_videos/video_21_polar_star_radar_grid.webp",
                 accentHex = 0xFF448AFFL,
                 fallbackLottieDesignId = "pro_video_21_polar_star_radar_grid",
                 isAtlasGrid = false,
-                motionProfile = ProMotionProfile.STAR_RADAR_GRID
+                motionProfile = ProMotionProfile.STAR_WAVE_CONTOUR
             ),
             ProVideoItem(
                 id = "folder_video_22_cyan_dot_matrix_hud",
-                index = 22,
+                index = 21,
                 title = "Cyan Dot-Matrix Telemetry HUD",
-                subtitle = "Exact uploaded design: 3 counter-rotating cyan dot-matrix, equalizer bar & scanner arc rings",
-                badge = "Real Design #22",
+                subtitle = "Exact uploaded design: counter-rotating cyan dot-matrix, equalizer bar & scanner arc rings",
+                badge = "Real Design #21",
                 assetPath = "pro_videos/video_22_cyan_dot_matrix_hud.mp4",
                 atlasAssetPath = "pro_videos/video_22_cyan_dot_matrix_hud.webp",
                 accentHex = 0xFF00E5FFL,
                 fallbackLottieDesignId = "pro_video_22_cyan_dot_matrix_hud",
                 isAtlasGrid = false,
-                motionProfile = ProMotionProfile.CYBER_SEGMENTED_HUD
-            ),
-            ProVideoItem(
-                id = "folder_video_23_cyan_matrix_overdrive_hud",
-                index = 23,
-                title = "Cyan Dot-Matrix Overdrive Dual-Spin",
-                subtitle = "Exact uploaded design: high-speed dual-spin overdrive HUD with counter-rotating dot-matrix bezel",
-                badge = "Real Design #23",
-                assetPath = "pro_videos/video_23_cyan_matrix_overdrive_hud.mp4",
-                atlasAssetPath = "pro_videos/video_23_cyan_matrix_overdrive_hud.webp",
-                accentHex = 0xFF18FFFFL,
-                fallbackLottieDesignId = "pro_video_23_cyan_matrix_overdrive_hud",
-                isAtlasGrid = false,
-                motionProfile = ProMotionProfile.CYBER_SEGMENTED_HUD
+                motionProfile = ProMotionProfile.HUD_RETICLE_CROSSHAIRS
             ),
             ProVideoItem(
                 id = "folder_video_24_aqua_wave_mesh_sphere",
-                index = 24,
+                index = 22,
                 title = "Aqua 3D Wave Mesh Sphere",
-                subtitle = "Exact uploaded design: counter-rotating 3D cyan particle stipple core & undulating wave crest shell",
-                badge = "Real Design #24",
+                subtitle = "Exact uploaded design: 3D cyan particle stipple core & undulating wave crest shell",
+                badge = "Real Design #22",
                 assetPath = "pro_videos/video_24_aqua_wave_mesh_sphere.mp4",
                 atlasAssetPath = "pro_videos/video_24_aqua_wave_mesh_sphere.webp",
                 accentHex = 0xFF00E5FFL,
                 fallbackLottieDesignId = "pro_video_24_aqua_wave_mesh_sphere",
                 isAtlasGrid = false,
-                motionProfile = ProMotionProfile.PLASMA_VORTEX_PORTAL
+                motionProfile = ProMotionProfile.CONTINUOUS_WAVE_TORUS
             ),
             ProVideoItem(
                 id = "folder_video_25_electric_lightning_globe",
-                index = 25,
+                index = 23,
                 title = "High-Voltage Electric Lightning Globe",
-                subtitle = "Exact uploaded design: counter-rotating electric blue plasma lightning arcs with high-voltage surge",
-                badge = "Real Design #25",
+                subtitle = "Exact uploaded design: intact electric blue plasma lightning arcs with high-voltage surge",
+                badge = "Real Design #23",
                 assetPath = "pro_videos/video_25_electric_lightning_globe.mp4",
                 atlasAssetPath = "pro_videos/video_25_electric_lightning_globe.webp",
                 accentHex = 0xFF2979FFL,
                 fallbackLottieDesignId = "pro_video_25_electric_lightning_globe",
                 isAtlasGrid = false,
-                motionProfile = ProMotionProfile.PLASMA_VORTEX_PORTAL
+                motionProfile = ProMotionProfile.ELECTRIC_PLASMA_LIGHTNING
             ),
             ProVideoItem(
                 id = "folder_video_26_fiber_optic_light_ring",
-                index = 26,
+                index = 24,
                 title = "White-Cyan Fiber-Optic Swirl Ring",
-                subtitle = "Exact uploaded design: multi-speed streaming white & cyan fiber-optic light trails on transparent core",
-                badge = "Real Design #26",
+                subtitle = "Exact uploaded design: streaming white & cyan fiber-optic light trails on transparent core",
+                badge = "Real Design #24",
                 assetPath = "pro_videos/video_26_fiber_optic_light_ring.mp4",
                 atlasAssetPath = "pro_videos/video_26_fiber_optic_light_ring.webp",
                 accentHex = 0xFF80D8FFL,
                 fallbackLottieDesignId = "pro_video_26_fiber_optic_light_ring",
                 isAtlasGrid = false,
-                motionProfile = ProMotionProfile.PLASMA_VORTEX_PORTAL
+                motionProfile = ProMotionProfile.CONTINUOUS_WAVE_TORUS
             ),
             ProVideoItem(
                 id = "folder_video_27_cyber_notched_hud_scanner",
-                index = 27,
+                index = 25,
                 title = "Cyber Notched Tactical HUD Scanner",
-                subtitle = "Exact uploaded design: counter-rotating outer notched brackets, triangle indicators & inner equalizer ticks",
-                badge = "Real Design #27",
+                subtitle = "Exact uploaded design: counter-rotating outer notched brackets, triangle indicators & inner ticks",
+                badge = "Real Design #25",
                 assetPath = "pro_videos/video_27_cyber_notched_hud_scanner.mp4",
                 atlasAssetPath = "pro_videos/video_27_cyber_notched_hud_scanner.webp",
                 accentHex = 0xFF00B0FFL,
                 fallbackLottieDesignId = "pro_video_27_cyber_notched_hud_scanner",
                 isAtlasGrid = false,
-                motionProfile = ProMotionProfile.CYBER_SEGMENTED_HUD
+                motionProfile = ProMotionProfile.HUD_RETICLE_CROSSHAIRS
             ),
             ProVideoItem(
                 id = "folder_video_28_hypnotic_spiral_torus",
-                index = 28,
+                index = 26,
                 title = "Hypnotic Optical Spiral Torus",
-                subtitle = "Exact uploaded design: spinning blue, cyan & gold logarithmic spiral torus with real optical wave motion",
-                badge = "Real Design #28",
+                subtitle = "Exact uploaded design: spinning blue, cyan & gold logarithmic spiral torus with optical wave motion",
+                badge = "Real Design #26",
                 assetPath = "pro_videos/video_28_hypnotic_spiral_torus.mp4",
                 atlasAssetPath = "pro_videos/video_28_hypnotic_spiral_torus.webp",
                 accentHex = 0xFF00E5FFL,
                 fallbackLottieDesignId = "pro_video_28_hypnotic_spiral_torus",
                 isAtlasGrid = false,
-                motionProfile = ProMotionProfile.PLASMA_VORTEX_PORTAL
+                motionProfile = ProMotionProfile.CONTINUOUS_WAVE_TORUS
             ),
             ProVideoItem(
                 id = "folder_video_29_neon_circuit_trace_ring",
-                index = 29,
+                index = 27,
                 title = "Neon Pink & Cyan Circuit Trace Ring",
                 subtitle = "Exact uploaded design: 3 counter-rotating neon magenta-to-cyan circuit trace bands with pulsing nodes",
-                badge = "Real Design #29",
+                badge = "Real Design #27",
                 assetPath = "pro_videos/video_29_neon_circuit_trace_ring.mp4",
                 atlasAssetPath = "pro_videos/video_29_neon_circuit_trace_ring.webp",
                 accentHex = 0xFFFF4081L,
                 fallbackLottieDesignId = "pro_video_29_neon_circuit_trace_ring",
                 isAtlasGrid = false,
-                motionProfile = ProMotionProfile.ARMILLARY_3D_GYRO
+                motionProfile = ProMotionProfile.CYBER_PCB_CIRCUIT
             )
         )
 
-        val extraItems = generatedProDesignSpecs.map { spec ->
-            val itemIndex = 29 + spec.designNum
-            val fileNum = String.format(Locale.US, "%03d", spec.designNum)
-            val webpPath = "pro_videos/design_$fileNum.webp"
+        val allExtraSpecs = featuredRealDesignSpecs + pdfHudDesignSpecs
+        val extraItems = allExtraSpecs.mapIndexed { offset, spec ->
+            val itemIndex = baseItems.size + offset + 1
             ProVideoItem(
-                id = "folder_${spec.slug}",
+                id = "folder_${spec.idSlug}",
                 index = itemIndex,
                 title = spec.title,
                 subtitle = spec.subtitle,
                 badge = spec.badge,
-                assetPath = webpPath,
-                atlasAssetPath = webpPath,
+                assetPath = spec.assetPath,
+                atlasAssetPath = spec.assetPath,
                 accentHex = spec.accentHex,
-                fallbackLottieDesignId = "pro_${spec.slug}",
+                fallbackLottieDesignId = "pro_${spec.idSlug}",
                 isAtlasGrid = false,
                 motionProfile = spec.profile
             )
@@ -665,9 +694,9 @@ object ProVideoFolder {
 /**
  * Thread-safe, pre-warmed cache for both:
  * 1. `8x8` multi-frame WebP video atlases (`video_1..7` and `video_14..20`), and
- * 2. High-resolution `480x480` single-frame transparent real designs (`video_8..13`, `video_21..29`,
- *    and `design_001..design_100`), automatically sliced into 3 seamless concentric ring bitmaps
- *    ([ProDesignLayers]) for 120fps multi-ring counter-rotation + additive HDR bloom.
+ * 2. High-resolution `512x512` single-frame transparent real designs (`video_8..13`, `video_21..29`,
+ *    `featured_001..011`, and `hud_pdf_001..060`), decomposed only along natural empty radial gaps
+ *    so continuous designs are never torn or altered.
  */
 object ProVideoFrameCache {
     const val ATLAS_COLS = 8
@@ -705,7 +734,7 @@ object ProVideoFrameCache {
 
     private val memoryCache: LruCache<String, Bitmap> = run {
         val maxKb = (Runtime.getRuntime().maxMemory() / 1024L).toInt()
-        val cacheSizeKb = (maxKb / 3).coerceAtLeast(40 * 1024)
+        val cacheSizeKb = (maxKb / 5).coerceIn(16 * 1024, 48 * 1024)
         object : LruCache<String, Bitmap>(cacheSizeKb) {
             override fun sizeOf(key: String, value: Bitmap): Int {
                 return (value.allocationByteCount / 1024).coerceAtLeast(1)
@@ -715,7 +744,7 @@ object ProVideoFrameCache {
 
     private val layersCache: LruCache<String, ProDesignLayers> = run {
         val maxKb = (Runtime.getRuntime().maxMemory() / 1024L).toInt()
-        val cacheSizeKb = (maxKb / 4).coerceAtLeast(32 * 1024)
+        val cacheSizeKb = (maxKb / 6).coerceIn(12 * 1024, 32 * 1024)
         object : LruCache<String, ProDesignLayers>(cacheSizeKb) {
             override fun sizeOf(key: String, value: ProDesignLayers): Int {
                 return value.allocationKb
@@ -723,105 +752,84 @@ object ProVideoFrameCache {
         }
     }
 
-    private fun cacheKeyFor(atlasPath: String, compact: Boolean): String {
-        return if (compact) "$atlasPath#compact" else atlasPath
-    }
-
     private fun lockFor(key: String): Any = synchronized(decodeLocks) {
         decodeLocks.getOrPut(key) { Any() }
     }
 
-    fun getCachedAtlas(assetPath: String, preferCompact: Boolean = false): Bitmap? {
+    fun getCachedAtlas(assetPath: String, @Suppress("UNUSED_PARAMETER") preferCompact: Boolean = false): Bitmap? {
         val atlasPath = ProVideoFolder.atlasPathFor(assetPath)
         val pinned = pinnedActiveBitmap
         if (pinned != null && !pinned.isRecycled && pinnedActiveAtlasPath == atlasPath) {
             return pinned
         }
         synchronized(memoryCache) {
-            if (preferCompact) {
-                val compact = memoryCache.get(cacheKeyFor(atlasPath, compact = true))
-                if (compact != null && !compact.isRecycled) return compact
-            }
-            val full = memoryCache.get(cacheKeyFor(atlasPath, compact = false))
+            val full = memoryCache.get(atlasPath)
             if (full != null && !full.isRecycled) return full
-            if (!preferCompact) {
-                val compactFallback = memoryCache.get(cacheKeyFor(atlasPath, compact = true))
-                if (compactFallback != null && !compactFallback.isRecycled) return compactFallback
-            }
         }
         return null
     }
 
-    fun getCachedDesignLayers(assetPath: String, preferCompact: Boolean = false): ProDesignLayers? {
+    fun getCachedDesignLayers(assetPath: String, @Suppress("UNUSED_PARAMETER") preferCompact: Boolean = false): ProDesignLayers? {
         val atlasPath = ProVideoFolder.atlasPathFor(assetPath)
         val pinned = pinnedActiveLayers
         if (pinned != null && !pinned.isRecycled && pinnedActiveAtlasPath == atlasPath) {
             return pinned
         }
         synchronized(layersCache) {
-            if (preferCompact) {
-                val compact = layersCache.get(cacheKeyFor(atlasPath, compact = true))
-                if (compact != null && !compact.isRecycled) return compact
-            }
-            val full = layersCache.get(cacheKeyFor(atlasPath, compact = false))
+            val full = layersCache.get(atlasPath)
             if (full != null && !full.isRecycled) return full
-            if (!preferCompact) {
-                val compactFallback = layersCache.get(cacheKeyFor(atlasPath, compact = true))
-                if (compactFallback != null && !compactFallback.isRecycled) return compactFallback
-            }
         }
         return null
     }
 
-    fun getOrDecodeAtlas(context: Context, assetPath: String, preferCompact: Boolean = false): Bitmap? {
+    fun getOrDecodeAtlas(context: Context, assetPath: String, @Suppress("UNUSED_PARAMETER") preferCompact: Boolean = false): Bitmap? {
         val item = ProVideoFolder.findItem(assetPath)
         val atlasPath = item?.atlasAssetPath ?: ProVideoFolder.atlasPathFor(assetPath)
         val pinned = pinnedActiveBitmap
-        if (!preferCompact && pinned != null && !pinned.isRecycled && pinnedActiveAtlasPath == atlasPath) {
+        if (pinned != null && !pinned.isRecycled && pinnedActiveAtlasPath == atlasPath) {
             return pinned
         }
-        val key = cacheKeyFor(atlasPath, compact = preferCompact)
         synchronized(memoryCache) {
-            val cached = memoryCache.get(key)
+            val cached = memoryCache.get(atlasPath)
             if (cached != null && !cached.isRecycled) return cached
-            if (preferCompact) {
-                val full = memoryCache.get(cacheKeyFor(atlasPath, compact = false))
-                if (full != null && !full.isRecycled) return full
-            }
         }
 
-        synchronized(lockFor(key)) {
+        synchronized(lockFor(atlasPath)) {
             synchronized(memoryCache) {
-                val cached = memoryCache.get(key)
+                val cached = memoryCache.get(atlasPath)
                 if (cached != null && !cached.isRecycled) return cached
             }
             val appCtx = context.applicationContext ?: context
-            val targetSample = if (preferCompact) 2 else 1
-            val decoded = decodeAtlasFromAssets(appCtx, atlasPath, sampleSize = targetSample)
-                ?: decodeAtlasFromAssets(appCtx, atlasPath, sampleSize = 2)
+            val decoded = decodeAtlasFromAssets(appCtx, atlasPath, sampleSize = 1)
             if (decoded != null) {
                 runCatching { decoded.prepareToDraw() }
                 synchronized(memoryCache) {
-                    memoryCache.put(key, decoded)
-                }
-                if (item != null && !item.isAtlasGrid) {
-                    getOrBuildDesignLayers(atlasPath, decoded, item.motionProfile, preferCompact)
+                    memoryCache.put(atlasPath, decoded)
                 }
             }
             return decoded
         }
     }
 
+    fun getOrBuildDesignLayers(
+        context: Context,
+        assetPath: String
+    ): ProDesignLayers? {
+        val item = ProVideoFolder.findItem(assetPath)
+        val atlasPath = item?.atlasAssetPath ?: ProVideoFolder.atlasPathFor(assetPath)
+        getCachedDesignLayers(atlasPath)?.let { return it }
+        val bmp = getOrDecodeAtlas(context, atlasPath, preferCompact = false) ?: return null
+        return getOrBuildDesignLayers(atlasPath, bmp, item?.motionProfile ?: ProMotionProfile.HUD_RETICLE_CROSSHAIRS)
+    }
+
     private fun getOrBuildDesignLayers(
         atlasPath: String,
         sourceBitmap: Bitmap,
-        profile: ProMotionProfile,
-        compact: Boolean
+        profile: ProMotionProfile
     ): ProDesignLayers? {
         if (sourceBitmap.isRecycled) return null
-        val key = cacheKeyFor(atlasPath, compact = compact)
         synchronized(layersCache) {
-            val existing = layersCache.get(key)
+            val existing = layersCache.get(atlasPath)
             if (existing != null && !existing.isRecycled) return existing
         }
         return runCatching {
@@ -832,89 +840,153 @@ object ProVideoFrameCache {
                 layers.outerRing.prepareToDraw()
             }
             synchronized(layersCache) {
-                layersCache.put(key, layers)
+                layersCache.put(atlasPath, layers)
             }
             layers
         }.getOrNull()
     }
 
     /**
-     * Slices a single-frame `480x480` (or `240x240`) real design bitmap into 3 concentric ring bitmaps
-     * (`innerCore`, `midRing`, `outerRing`) using linear complementary radial alpha gradients
-     * (`wInner + wMid + wOuter == 1.0` at every pixel) so the real design is 100% preserved while
-     * allowing each ring to rotate, counter-rotate, breathe, and bloom independently at 120fps.
+     * Decomposes a single-frame HD design bitmap strictly along its archetype's natural empty radial gaps
+     * (`wInner + wMid + wOuter == 1.0` at every pixel), or keeps it 100% unified when the archetype is a
+     * continuous 1-body wave, lightning ring, starfield, or star-wave contour so the design is never torn.
      */
     private fun sliceIntoConcentricRings(src: Bitmap, profile: ProMotionProfile): ProDesignLayers {
-        val w = src.width.coerceAtLeast(1)
-        val h = src.height.coerceAtLeast(1)
-        val cx = w * 0.5f
-        val cy = h * 0.5f
-        val maxR = min(w, h) * 0.5f
+        when (profile) {
+            // 1-Layer Intact Continuous Designs: zero slicing so waves, lightning, stars & particles are 100% untouched
+            ProMotionProfile.ELECTRIC_PLASMA_LIGHTNING,
+            ProMotionProfile.CONTINUOUS_WAVE_TORUS,
+            ProMotionProfile.ORBITAL_STARFIELD_RING,
+            ProMotionProfile.STAR_WAVE_CONTOUR,
+            ProMotionProfile.ATLAS_VIDEO -> {
+                return ProDesignLayers(
+                    fullBitmap = src,
+                    innerCore = src,
+                    midRing = src,
+                    outerRing = src
+                )
+            }
 
-        val r1: Float
-        val r2: Float
-        val r3: Float
-        val r4: Float
-        if (profile == ProMotionProfile.SPEEDOMETER_HUD) {
-            // Keep the 0..240 speedometer dial and 870/965 digital numbers inside innerCore,
-            // isolate the blazing red/orange plasma ring into midRing, and RPM wings into outerRing.
-            r1 = 0.50f
-            r2 = 0.56f
-            r3 = 0.67f
-            r4 = 0.73f
-        } else {
-            r1 = 0.33f
-            r2 = 0.43f
-            r3 = 0.64f
-            r4 = 0.74f
+            // 2-Layer Natural-Gap Designs: split cleanly at the exact empty radial valley between inner & outer structures
+            ProMotionProfile.SPIROGRAPH_BRAID_TORUS,
+            ProMotionProfile.POLYGON_APERTURE_IRIS,
+            ProMotionProfile.EQUALIZER_WAVEFORM_HUD,
+            ProMotionProfile.BRAIDED_LATTICE_DOTS -> {
+                val (gapInner, gapOuter) = when (profile) {
+                    ProMotionProfile.SPIROGRAPH_BRAID_TORUS -> Pair(0.51f, 0.55f)
+                    ProMotionProfile.POLYGON_APERTURE_IRIS -> Pair(0.60f, 0.64f)
+                    ProMotionProfile.EQUALIZER_WAVEFORM_HUD -> Pair(0.38f, 0.42f)
+                    else -> Pair(0.79f, 0.83f) // BRAIDED_LATTICE_DOTS
+                }
+                val w = src.width.coerceAtLeast(1)
+                val h = src.height.coerceAtLeast(1)
+                val cx = w * 0.5f
+                val cy = h * 0.5f
+                val maxR = min(w, h) * 0.5f
+                val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
+                }
+
+                val innerBmp = src.copy(Bitmap.Config.ARGB_8888, true)
+                Canvas(innerBmp).apply {
+                    maskPaint.shader = RadialGradient(
+                        cx, cy, maxR,
+                        intArrayOf(-0x1, -0x1, 0x00FFFFFF, 0x00FFFFFF),
+                        floatArrayOf(0f, gapInner, gapOuter, 1f),
+                        Shader.TileMode.CLAMP
+                    )
+                    drawRect(0f, 0f, w.toFloat(), h.toFloat(), maskPaint)
+                }
+
+                val outerBmp = src.copy(Bitmap.Config.ARGB_8888, true)
+                Canvas(outerBmp).apply {
+                    maskPaint.shader = RadialGradient(
+                        cx, cy, maxR,
+                        intArrayOf(0x00FFFFFF, 0x00FFFFFF, -0x1, -0x1),
+                        floatArrayOf(0f, gapInner, gapOuter, 1f),
+                        Shader.TileMode.CLAMP
+                    )
+                    drawRect(0f, 0f, w.toFloat(), h.toFloat(), maskPaint)
+                }
+
+                return ProDesignLayers(
+                    fullBitmap = src,
+                    innerCore = innerBmp,
+                    midRing = innerBmp,
+                    outerRing = outerBmp
+                )
+            }
+
+            // 3-Layer Natural-Gap HUD Designs: split at the two natural empty gaps between inner, middle & outer HUD rings
+            ProMotionProfile.SPEEDOMETER_HUD,
+            ProMotionProfile.HUD_RETICLE_CROSSHAIRS,
+            ProMotionProfile.CYBER_PCB_CIRCUIT -> {
+                val r1: Float
+                val r2: Float
+                val r3: Float
+                val r4: Float
+                when (profile) {
+                    ProMotionProfile.SPEEDOMETER_HUD -> {
+                        r1 = 0.50f; r2 = 0.56f; r3 = 0.67f; r4 = 0.73f
+                    }
+                    ProMotionProfile.CYBER_PCB_CIRCUIT -> {
+                        r1 = 0.42f; r2 = 0.46f; r3 = 0.57f; r4 = 0.61f
+                    }
+                    else -> { // HUD_RETICLE_CROSSHAIRS
+                        r1 = 0.47f; r2 = 0.51f; r3 = 0.75f; r4 = 0.80f
+                    }
+                }
+
+                val w = src.width.coerceAtLeast(1)
+                val h = src.height.coerceAtLeast(1)
+                val cx = w * 0.5f
+                val cy = h * 0.5f
+                val maxR = min(w, h) * 0.5f
+                val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
+                }
+
+                val innerBmp = src.copy(Bitmap.Config.ARGB_8888, true)
+                Canvas(innerBmp).apply {
+                    maskPaint.shader = RadialGradient(
+                        cx, cy, maxR,
+                        intArrayOf(-0x1, -0x1, 0x00FFFFFF, 0x00FFFFFF),
+                        floatArrayOf(0f, r1, r2, 1f),
+                        Shader.TileMode.CLAMP
+                    )
+                    drawRect(0f, 0f, w.toFloat(), h.toFloat(), maskPaint)
+                }
+
+                val midBmp = src.copy(Bitmap.Config.ARGB_8888, true)
+                Canvas(midBmp).apply {
+                    maskPaint.shader = RadialGradient(
+                        cx, cy, maxR,
+                        intArrayOf(0x00FFFFFF, 0x00FFFFFF, -0x1, -0x1, 0x00FFFFFF, 0x00FFFFFF),
+                        floatArrayOf(0f, r1, r2, r3, r4, 1f),
+                        Shader.TileMode.CLAMP
+                    )
+                    drawRect(0f, 0f, w.toFloat(), h.toFloat(), maskPaint)
+                }
+
+                val outerBmp = src.copy(Bitmap.Config.ARGB_8888, true)
+                Canvas(outerBmp).apply {
+                    maskPaint.shader = RadialGradient(
+                        cx, cy, maxR,
+                        intArrayOf(0x00FFFFFF, 0x00FFFFFF, -0x1, -0x1),
+                        floatArrayOf(0f, r3, r4, 1f),
+                        Shader.TileMode.CLAMP
+                    )
+                    drawRect(0f, 0f, w.toFloat(), h.toFloat(), maskPaint)
+                }
+
+                return ProDesignLayers(
+                    fullBitmap = src,
+                    innerCore = innerBmp,
+                    midRing = midBmp,
+                    outerRing = outerBmp
+                )
+            }
         }
-
-        val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
-        }
-
-        // 1. Inner Core (1.0 from 0..r1, ramps to 0.0 at r2)
-        val innerBmp = src.copy(Bitmap.Config.ARGB_8888, true)
-        Canvas(innerBmp).apply {
-            maskPaint.shader = RadialGradient(
-                cx, cy, maxR,
-                intArrayOf(-0x1, -0x1, 0x00FFFFFF, 0x00FFFFFF),
-                floatArrayOf(0f, r1, r2, 1f),
-                Shader.TileMode.CLAMP
-            )
-            drawRect(0f, 0f, w.toFloat(), h.toFloat(), maskPaint)
-        }
-
-        // 2. Mid Ring (0.0 from 0..r1, ramps to 1.0 at r2..r3, ramps to 0.0 at r4)
-        val midBmp = src.copy(Bitmap.Config.ARGB_8888, true)
-        Canvas(midBmp).apply {
-            maskPaint.shader = RadialGradient(
-                cx, cy, maxR,
-                intArrayOf(0x00FFFFFF, 0x00FFFFFF, -0x1, -0x1, 0x00FFFFFF, 0x00FFFFFF),
-                floatArrayOf(0f, r1, r2, r3, r4, 1f),
-                Shader.TileMode.CLAMP
-            )
-            drawRect(0f, 0f, w.toFloat(), h.toFloat(), maskPaint)
-        }
-
-        // 3. Outer Ring (0.0 from 0..r3, ramps to 1.0 at r4..1.0)
-        val outerBmp = src.copy(Bitmap.Config.ARGB_8888, true)
-        Canvas(outerBmp).apply {
-            maskPaint.shader = RadialGradient(
-                cx, cy, maxR,
-                intArrayOf(0x00FFFFFF, 0x00FFFFFF, -0x1, -0x1),
-                floatArrayOf(0f, r3, r4, 1f),
-                Shader.TileMode.CLAMP
-            )
-            drawRect(0f, 0f, w.toFloat(), h.toFloat(), maskPaint)
-        }
-
-        return ProDesignLayers(
-            fullBitmap = src,
-            innerCore = innerBmp,
-            midRing = midBmp,
-            outerRing = outerBmp
-        )
     }
 
     private fun decodeAtlasFromAssets(context: Context, atlasPath: String, sampleSize: Int): Bitmap? {
@@ -956,8 +1028,8 @@ object ProVideoFrameCache {
     }
 
     /**
-     * Pins the active lock-screen Pro Video / Pro Design in memory at full resolution (`inSampleSize = 1`)
-     * along with its pre-sliced concentric ring bitmaps so fingerprint sensor touch triggers in `<1ms`.
+     * Pins the active lock-screen/unlocked-screen Pro Video / Pro Design in memory at full HD resolution
+     * (`inSampleSize = 1`) so fingerprint sensor touch triggers in `<1ms`.
      */
     fun pinActiveOverlayAtlas(context: Context, assetPath: String?) {
         if (assetPath.isNullOrBlank()) {
@@ -980,12 +1052,16 @@ object ProVideoFrameCache {
                 pinnedActiveAtlasPath = atlasPath
                 pinnedActiveBitmap = bmp
                 if (item != null && !item.isAtlasGrid) {
-                    pinnedActiveLayers = getOrBuildDesignLayers(atlasPath, bmp, item.motionProfile, compact = false)
+                    pinnedActiveLayers = getOrBuildDesignLayers(atlasPath, bmp, item.motionProfile)
                 } else {
                     pinnedActiveLayers = null
                 }
             }
         }
+    }
+
+    fun prewarm(context: Context, specificAssetPath: String? = null) {
+        prewarmAsync(context, specificAssetPath = specificAssetPath, preferCompact = false)
     }
 
     fun prewarmAsync(
@@ -996,26 +1072,26 @@ object ProVideoFrameCache {
     ) {
         val appCtx = context.applicationContext ?: context
         val isActivePrewarm = specificAssetPath == null
-        val targetPath = specificAssetPath ?: Prefs.getSelectedVideoAsset(appCtx) ?: ProVideoFolder.items.first().assetPath
+        val targetPath = specificAssetPath ?: Prefs.getSelectedVideoAsset(appCtx)
         val item = ProVideoFolder.findItem(targetPath)
         val atlasPath = item?.atlasAssetPath ?: ProVideoFolder.atlasPathFor(targetPath)
 
-        val already = getCachedAtlas(atlasPath, preferCompact = preferCompact)
-        if (already != null && (preferCompact || pinnedActiveAtlasPath == atlasPath || !isActivePrewarm)) {
-            if (item != null && !item.isAtlasGrid && getCachedDesignLayers(atlasPath, preferCompact = preferCompact) == null) {
-                decodeExecutor.execute {
-                    getOrBuildDesignLayers(atlasPath, already, item.motionProfile, compact = preferCompact)
-                }
-            }
-            if (isActivePrewarm && !preferCompact) {
+        val already = getCachedAtlas(atlasPath, preferCompact = false)
+        if (already != null) {
+            if (isActivePrewarm) {
                 pinnedActiveAtlasPath = atlasPath
                 pinnedActiveBitmap = already
+                if (item != null && !item.isAtlasGrid && pinnedActiveLayers == null) {
+                    decodeExecutor.execute {
+                        pinnedActiveLayers = getOrBuildDesignLayers(atlasPath, already, item.motionProfile)
+                    }
+                }
             }
             onReady?.invoke(already)
             return
         }
 
-        val inflightKey = cacheKeyFor(atlasPath, compact = preferCompact)
+        val inflightKey = atlasPath
         synchronized(inFlightCallbacks) {
             val existingList = inFlightCallbacks[inflightKey]
             if (existingList != null) {
@@ -1029,13 +1105,13 @@ object ProVideoFrameCache {
 
         val executor = if (isActivePrewarm || !preferCompact) priorityOverlayExecutor else decodeExecutor
         executor.execute {
-            val bmp = getOrDecodeAtlas(appCtx, atlasPath, preferCompact = preferCompact)
-            if (bmp != null && !preferCompact && (isActivePrewarm || Prefs.getSelectedVideoAsset(appCtx) == targetPath)) {
+            val bmp = getOrDecodeAtlas(appCtx, atlasPath, preferCompact = false)
+            if (bmp != null && (isActivePrewarm || Prefs.getSelectedVideoAsset(appCtx) == targetPath)) {
                 runCatching { bmp.prepareToDraw() }
                 pinnedActiveAtlasPath = atlasPath
                 pinnedActiveBitmap = bmp
                 if (item != null && !item.isAtlasGrid) {
-                    pinnedActiveLayers = getCachedDesignLayers(atlasPath, preferCompact = false)
+                    pinnedActiveLayers = getOrBuildDesignLayers(atlasPath, bmp, item.motionProfile)
                 }
             }
             val callbacks = synchronized(inFlightCallbacks) {
@@ -1051,15 +1127,11 @@ object ProVideoFrameCache {
         }
     }
 
-    /**
-     * Pre-warms the first visible batch of compact thumbnails in the background so opening
-     * the Pro Video Folder feels instantaneous with zero frame drops.
-     */
-    fun prewarmGalleryThumbnailsAsync(context: Context, count: Int = 10) {
+    fun prewarmGalleryThumbnailsAsync(context: Context, count: Int = 8) {
         val appCtx = context.applicationContext ?: context
         val subset = ProVideoFolder.items.take(count)
         for (item in subset) {
-            if (getCachedAtlas(item.atlasAssetPath, preferCompact = true) == null) {
+            if (getCachedAtlas(item.atlasAssetPath) == null) {
                 prewarmAsync(appCtx, specificAssetPath = item.assetPath, preferCompact = true)
             }
         }
@@ -1067,20 +1139,18 @@ object ProVideoFrameCache {
 }
 
 /**
- * Hardware-accelerated, zero-black-background animation view that renders:
- * 1. The 14 uploaded `.mp4` Pro Videos (`8x8` frame atlases) with sub-frame cross-fade interpolation
- *    and an additive `PorterDuff.Mode.ADD` HDR optical bloom pass, AND
- * 2. All 115 high-res `480x480` uploaded Pro Designs at native **60/120fps** using the
- *    **Real-Design Multi-Ring HDR Live Animation Engine** (preserving 100% of the real uploaded artwork
- *    while animating `outerRing`, `midRing`, and `innerCore` with differential counter-rotation,
- *    3D gimbal perspective breathing, additive HDR self-bloom, live laser speedometer needle sweep,
- *    and expanding optical shockwave rings).
+ * Hardware-accelerated, zero-black-background HD animation view that renders:
+ * 1. The 14 uploaded `.mp4` Pro Videos (`8x8` 1120x1120 HD frame atlases) with sub-frame cross-fade
+ *    interpolation and an aligned additive `PorterDuff.Mode.ADD` HDR optical bloom pass, AND
+ * 2. All 84 high-res `512x512` HD Real & PDF HUD Designs at native **60/120fps** using archetype-aware
+ *    motion (keeping continuous waves, spirographs, lightning, stars & polygons 100% intact while
+ *    counter-rotating multi-ring HUDs strictly along their natural empty radial gaps).
  */
 class LoopingAssetVideoView(context: Context) : View(context), Choreographer.FrameCallback {
 
-    private val basePaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-    private val blendPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-    private val additiveBitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
+    private val basePaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
+    private val blendPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
+    private val additiveBitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG).apply {
         xfermode = PorterDuffXfermode(PorterDuff.Mode.ADD)
     }
     private val additiveFxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -1098,6 +1168,31 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
     private val fullBmpSrcRect = Rect()
     private val dstRect = RectF()
 
+    // Hardware clip paths aligned with natural empty radial gaps when layers are not yet cached
+    private val hudOuterClipPath = android.graphics.Path()
+    private val hudMidClipPath = android.graphics.Path()
+    private val hudInnerClipPath = android.graphics.Path()
+
+    private val pcbOuterClipPath = android.graphics.Path()
+    private val pcbMidClipPath = android.graphics.Path()
+    private val pcbInnerClipPath = android.graphics.Path()
+
+    private val speedoOuterClipPath = android.graphics.Path()
+    private val speedoMidClipPath = android.graphics.Path()
+    private val speedoInnerClipPath = android.graphics.Path()
+
+    private val spiroInnerClipPath = android.graphics.Path()
+    private val spiroOuterClipPath = android.graphics.Path()
+
+    private val polyInnerClipPath = android.graphics.Path()
+    private val polyOuterClipPath = android.graphics.Path()
+
+    private val eqInnerClipPath = android.graphics.Path()
+    private val eqOuterClipPath = android.graphics.Path()
+
+    private val latticeInnerClipPath = android.graphics.Path()
+    private val latticeOuterClipPath = android.graphics.Path()
+
     var preferCompactDecode: Boolean = false
 
     private var loadedAssetPath: String? = null
@@ -1114,20 +1209,50 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
     init {
         setWillNotDraw(false)
         setBackgroundColor(Color.TRANSPARENT)
-        outlineProvider = object : ViewOutlineProvider() {
-            override fun getOutline(view: View, outline: Outline) {
-                val d = minOf(view.width, view.height)
-                val left = (view.width - d) / 2
-                val top = (view.height - d) / 2
-                outline.setOval(left, top, left + d, top + d)
-            }
-        }
-        clipToOutline = true
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         updateDstRect(w, h)
+    }
+
+    private fun buildTwoZoneClipPaths(
+        cx: Float,
+        cy: Float,
+        r: Float,
+        splitFraction: Float,
+        innerPath: android.graphics.Path,
+        outerPath: android.graphics.Path
+    ) {
+        innerPath.reset()
+        innerPath.addCircle(cx, cy, r * splitFraction, android.graphics.Path.Direction.CW)
+        outerPath.reset()
+        outerPath.addCircle(cx, cy, r * 1.05f, android.graphics.Path.Direction.CW)
+        outerPath.op(innerPath, android.graphics.Path.Op.DIFFERENCE)
+    }
+
+    private fun buildThreeZoneClipPaths(
+        cx: Float,
+        cy: Float,
+        r: Float,
+        split1: Float,
+        split2: Float,
+        innerPath: android.graphics.Path,
+        midPath: android.graphics.Path,
+        outerPath: android.graphics.Path
+    ) {
+        innerPath.reset()
+        innerPath.addCircle(cx, cy, r * split1, android.graphics.Path.Direction.CW)
+
+        midPath.reset()
+        midPath.addCircle(cx, cy, r * split2, android.graphics.Path.Direction.CW)
+        midPath.op(innerPath, android.graphics.Path.Op.DIFFERENCE)
+
+        val midOuterUnion = android.graphics.Path()
+        midOuterUnion.addCircle(cx, cy, r * split2, android.graphics.Path.Direction.CW)
+        outerPath.reset()
+        outerPath.addCircle(cx, cy, r * 1.05f, android.graphics.Path.Direction.CW)
+        outerPath.op(midOuterUnion, android.graphics.Path.Op.DIFFERENCE)
     }
 
     private fun updateDstRect(w: Int, h: Int) {
@@ -1136,6 +1261,18 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
         val left = (w - d) / 2f
         val top = (h - d) / 2f
         dstRect.set(left, top, left + d, top + d)
+        val cx = dstRect.centerX()
+        val cy = dstRect.centerY()
+        val r = d * 0.5f
+
+        buildThreeZoneClipPaths(cx, cy, r, 0.49f, 0.78f, hudInnerClipPath, hudMidClipPath, hudOuterClipPath)
+        buildThreeZoneClipPaths(cx, cy, r, 0.44f, 0.59f, pcbInnerClipPath, pcbMidClipPath, pcbOuterClipPath)
+        buildThreeZoneClipPaths(cx, cy, r, 0.53f, 0.70f, speedoInnerClipPath, speedoMidClipPath, speedoOuterClipPath)
+
+        buildTwoZoneClipPaths(cx, cy, r, 0.53f, spiroInnerClipPath, spiroOuterClipPath)
+        buildTwoZoneClipPaths(cx, cy, r, 0.62f, polyInnerClipPath, polyOuterClipPath)
+        buildTwoZoneClipPaths(cx, cy, r, 0.40f, eqInnerClipPath, eqOuterClipPath)
+        buildTwoZoneClipPaths(cx, cy, r, 0.81f, latticeInnerClipPath, latticeOuterClipPath)
     }
 
     fun setVideoAsset(
@@ -1145,14 +1282,14 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
         preferCompact: Boolean = preferCompactDecode
     ) {
         preferCompactDecode = preferCompact
-        desiredSpeed = speed.coerceIn(0.25f, 3.0f)
+        desiredSpeed = speed.coerceIn(0.25f, 8.0f)
         val pathChanged = loadedAssetPath != assetPath
         loadedAssetPath = assetPath
         loadedItem = ProVideoFolder.findItem(assetPath)
 
         if (pathChanged || atlasBitmap == null || atlasBitmap?.isRecycled == true) {
-            designLayers = ProVideoFrameCache.getCachedDesignLayers(assetPath, preferCompact = preferCompact)
-            val cached = ProVideoFrameCache.getCachedAtlas(assetPath, preferCompact = preferCompact)
+            designLayers = ProVideoFrameCache.getCachedDesignLayers(assetPath)
+            val cached = ProVideoFrameCache.getCachedAtlas(assetPath)
             if (cached != null) {
                 atlasBitmap = cached
                 invalidate()
@@ -1164,7 +1301,7 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
                 ) { decoded ->
                     if (loadedAssetPath == assetPath && decoded != null) {
                         atlasBitmap = decoded
-                        designLayers = ProVideoFrameCache.getCachedDesignLayers(assetPath, preferCompact = preferCompact)
+                        designLayers = ProVideoFrameCache.getCachedDesignLayers(assetPath)
                         invalidate()
                         if (isPlaying) {
                             scheduleNextFrame()
@@ -1182,15 +1319,15 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
     }
 
     fun setPlaybackSpeed(speed: Float) {
-        desiredSpeed = speed.coerceIn(0.25f, 3.0f)
+        desiredSpeed = speed.coerceIn(0.25f, 8.0f)
     }
 
     fun startImmediate() {
         isPlaying = true
         val path = loadedAssetPath
         if ((atlasBitmap == null || atlasBitmap?.isRecycled == true) && path != null) {
-            designLayers = ProVideoFrameCache.getCachedDesignLayers(path, preferCompact = preferCompactDecode)
-            val cached = ProVideoFrameCache.getCachedAtlas(path, preferCompact = preferCompactDecode)
+            designLayers = ProVideoFrameCache.getCachedDesignLayers(path)
+            val cached = ProVideoFrameCache.getCachedAtlas(path)
             if (cached != null) {
                 atlasBitmap = cached
             } else {
@@ -1201,7 +1338,7 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
                 ) { decoded ->
                     if (loadedAssetPath == path && decoded != null) {
                         atlasBitmap = decoded
-                        designLayers = ProVideoFrameCache.getCachedDesignLayers(path, preferCompact = preferCompactDecode)
+                        designLayers = ProVideoFrameCache.getCachedDesignLayers(path)
                         invalidate()
                         if (isPlaying) scheduleNextFrame()
                     }
@@ -1228,8 +1365,8 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
         lastFrameTimeNanos = 0L
         val path = loadedAssetPath
         if ((atlasBitmap == null || atlasBitmap?.isRecycled == true) && path != null) {
-            designLayers = ProVideoFrameCache.getCachedDesignLayers(path, preferCompact = preferCompactDecode)
-            val cached = ProVideoFrameCache.getCachedAtlas(path, preferCompact = preferCompactDecode)
+            designLayers = ProVideoFrameCache.getCachedDesignLayers(path)
+            val cached = ProVideoFrameCache.getCachedAtlas(path)
             if (cached != null) {
                 atlasBitmap = cached
             } else {
@@ -1240,7 +1377,7 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
                 ) { decoded ->
                     if (loadedAssetPath == path && decoded != null) {
                         atlasBitmap = decoded
-                        designLayers = ProVideoFrameCache.getCachedDesignLayers(path, preferCompact = preferCompactDecode)
+                        designLayers = ProVideoFrameCache.getCachedDesignLayers(path)
                         invalidate()
                     }
                 }
@@ -1323,7 +1460,7 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
         super.onDraw(canvas)
         if (alpha <= 0.001f) return
         val path = loadedAssetPath ?: return
-        val bmp = atlasBitmap ?: ProVideoFrameCache.getCachedAtlas(path, preferCompact = preferCompactDecode)?.also {
+        val bmp = atlasBitmap ?: ProVideoFrameCache.getCachedAtlas(path)?.also {
             atlasBitmap = it
         } ?: return
 
@@ -1350,33 +1487,53 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
 
         val frameIdx = (currentFrameFloat.toInt() % ProVideoFrameCache.TOTAL_FRAMES)
             .coerceIn(0, ProVideoFrameCache.TOTAL_FRAMES - 1)
-        val nextIdx = (frameIdx + 1) % ProVideoFrameCache.TOTAL_FRAMES
-        val frac = (currentFrameFloat - currentFrameFloat.toInt()).coerceIn(0f, 1f)
-
         val col = frameIdx % ProVideoFrameCache.ATLAS_COLS
         val row = frameIdx / ProVideoFrameCache.ATLAS_COLS
         srcRect.set(col * cellW, row * cellH, (col + 1) * cellW, (row + 1) * cellH)
 
-        // 1. Primary crisp video frame
+        // Native Super HD crisp video frame: pristine 1:1 render with zero ghosting blur
         basePaint.alpha = 255
         canvas.drawBitmap(bmp, srcRect, dstRect, basePaint)
+    }
 
-        // 2. Sub-frame cross-fade interpolation for 120Hz silky-smooth motion
-        if (frac > 0.05f) {
-            val nCol = nextIdx % ProVideoFrameCache.ATLAS_COLS
-            val nRow = nextIdx / ProVideoFrameCache.ATLAS_COLS
-            nextSrcRect.set(nCol * cellW, nRow * cellH, (nCol + 1) * cellW, (nRow + 1) * cellH)
-            blendPaint.alpha = (frac * 155f).toInt().coerceIn(0, 155)
-            canvas.drawBitmap(bmp, nextSrcRect, dstRect, blendPaint)
-        }
-
-        // 3. Additive HDR optical bloom pass so real video frames radiate authentic OLED laser glow
-        val pulse = 0.5f + 0.5f * sin(elapsedAnimSeconds * 4.2f)
-        val bloomScale = 1.025f + 0.02f * pulse
-        additiveBitmapPaint.alpha = (58f + 36f * pulse).toInt().coerceIn(40, 105)
+    private fun drawIntactWholeDesign(
+        canvas: Canvas,
+        bmp: Bitmap,
+        cx: Float,
+        cy: Float,
+        angleDeg: Float,
+        scaleX: Float,
+        scaleY: Float,
+        bloomAlpha: Int
+    ) {
         canvas.save()
-        canvas.scale(bloomScale, bloomScale, dstRect.centerX(), dstRect.centerY())
-        canvas.drawBitmap(bmp, srcRect, dstRect, additiveBitmapPaint)
+        canvas.rotate(angleDeg, cx, cy)
+        canvas.scale(scaleX, scaleY, cx, cy)
+        fullBmpSrcRect.set(0, 0, bmp.width, bmp.height)
+        basePaint.alpha = 255
+        canvas.drawBitmap(bmp, fullBmpSrcRect, dstRect, basePaint)
+        canvas.restore()
+    }
+
+    private fun drawRingLayer(
+        canvas: Canvas,
+        ringBmp: Bitmap?,
+        fallbackBmp: Bitmap,
+        @Suppress("UNUSED_PARAMETER") clipPath: android.graphics.Path,
+        cx: Float,
+        cy: Float,
+        angleDeg: Float,
+        scaleX: Float,
+        scaleY: Float,
+        bloomAlpha: Int
+    ) {
+        val targetBmp = ringBmp ?: fallbackBmp
+        canvas.save()
+        canvas.rotate(angleDeg, cx, cy)
+        canvas.scale(scaleX, scaleY, cx, cy)
+        fullBmpSrcRect.set(0, 0, targetBmp.width, targetBmp.height)
+        basePaint.alpha = 255
+        canvas.drawBitmap(targetBmp, fullBmpSrcRect, dstRect, basePaint)
         canvas.restore()
     }
 
@@ -1384,7 +1541,7 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
         val path = loadedAssetPath
         var layers = designLayers
         if ((layers == null || layers.isRecycled) && path != null) {
-            layers = ProVideoFrameCache.getCachedDesignLayers(path, preferCompact = preferCompactDecode)
+            layers = ProVideoFrameCache.getCachedDesignLayers(path)
             designLayers = layers
         }
 
@@ -1393,222 +1550,195 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
         val radius = dstRect.width() * 0.5f
         val t = elapsedAnimSeconds
         val idxSeed = (item?.index ?: 1) * 0.37f
-        val profile = item?.motionProfile ?: ProMotionProfile.CYBER_SEGMENTED_HUD
+        val profile = item?.motionProfile ?: ProMotionProfile.HUD_RETICLE_CROSSHAIRS
         val accentColor = ((item?.accentHex ?: 0xFF00E5FFL).toInt()) or -0x1000000
+        val useLayers = layers?.takeIf { !it.isRecycled }
+        val dir = if ((item?.index ?: 0) % 2 == 0) 1f else -1f
 
-        if (layers != null && !layers.isRecycled) {
-            val lBmp = layers.fullBitmap
-            fullBmpSrcRect.set(0, 0, lBmp.width, lBmp.height)
+        when (profile) {
+            ProMotionProfile.SPEEDOMETER_HUD -> {
+                val wingSway = sin(t * 2.3f) * 8.0f
+                val wingScale = 1.0f + 0.02f * cos(t * 2.8f)
 
-            when (profile) {
-                ProMotionProfile.SPEEDOMETER_HUD -> {
-                    val isOverdrive = (item?.index == 9)
-                    val wingSway = sin(t * (if (isOverdrive) 3.4f else 2.2f)) * (if (isOverdrive) 12f else 7.5f)
-                    val wingScale = 1.0f + 0.02f * cos(t * 2.8f)
+                drawRingLayer(
+                    canvas = canvas,
+                    ringBmp = useLayers?.outerRing,
+                    fallbackBmp = bmp,
+                    clipPath = speedoOuterClipPath,
+                    cx = cx,
+                    cy = cy,
+                    angleDeg = wingSway,
+                    scaleX = wingScale,
+                    scaleY = wingScale,
+                    bloomAlpha = 48
+                )
 
-                    // 1. Outer RPM tachometer wings (oscillate & breathe)
-                    canvas.save()
-                    canvas.rotate(wingSway, cx, cy)
-                    canvas.scale(wingScale, wingScale, cx, cy)
-                    basePaint.alpha = 255
-                    canvas.drawBitmap(layers.outerRing, fullBmpSrcRect, dstRect, basePaint)
-                    canvas.restore()
+                val plasmaAngle = (t * 88f) % 360f
+                val plasmaPulse = 1.0f + 0.025f * sin(t * 4.5f)
+                drawRingLayer(
+                    canvas = canvas,
+                    ringBmp = useLayers?.midRing,
+                    fallbackBmp = bmp,
+                    clipPath = speedoMidClipPath,
+                    cx = cx,
+                    cy = cy,
+                    angleDeg = plasmaAngle,
+                    scaleX = plasmaPulse,
+                    scaleY = plasmaPulse,
+                    bloomAlpha = 88
+                )
 
-                    // 2. Middle red/orange turbo plasma ring (high-speed continuous spin + HDR bloom)
-                    val plasmaAngle = (t * (if (isOverdrive) -125f else 85f)) % 360f
-                    val plasmaPulse = 1.0f + 0.03f * sin(t * 4.5f)
-                    canvas.save()
-                    canvas.rotate(plasmaAngle, cx, cy)
-                    canvas.scale(plasmaPulse, plasmaPulse, cx, cy)
-                    canvas.drawBitmap(layers.midRing, fullBmpSrcRect, dstRect, basePaint)
-                    additiveBitmapPaint.alpha = 115
-                    canvas.scale(1.03f, 1.03f, cx, cy)
-                    canvas.drawBitmap(layers.midRing, fullBmpSrcRect, dstRect, additiveBitmapPaint)
-                    canvas.restore()
+                val dialTilt = sin(t * 1.9f) * 2.0f
+                val dialBreath = 1.0f + 0.012f * sin(t * 3.6f)
+                drawRingLayer(
+                    canvas = canvas,
+                    ringBmp = useLayers?.innerCore,
+                    fallbackBmp = bmp,
+                    clipPath = speedoInnerClipPath,
+                    cx = cx,
+                    cy = cy,
+                    angleDeg = dialTilt,
+                    scaleX = dialBreath,
+                    scaleY = dialBreath,
+                    bloomAlpha = 52
+                )
 
-                    // 3. Inner 0-240 speedometer dial & 870/965 readout (kept upright & readable!)
-                    val dialTilt = sin(t * 1.9f) * 2.2f
-                    val dialBreath = 1.0f + 0.015f * sin(t * 3.6f)
-                    canvas.save()
-                    canvas.rotate(dialTilt, cx, cy)
-                    canvas.scale(dialBreath, dialBreath, cx, cy)
-                    canvas.drawBitmap(layers.innerCore, fullBmpSrcRect, dstRect, basePaint)
-                    additiveBitmapPaint.alpha = 70
-                    canvas.drawBitmap(layers.innerCore, fullBmpSrcRect, dstRect, additiveBitmapPaint)
-                    canvas.restore()
-
-                    // 4. Live sweeping laser speedometer needle across the 0..240 dial
-                    val revWave = 0.5f + 0.5f * sin(t * (if (isOverdrive) 3.8f else 2.4f) + sin(t * 1.3f) * 0.6f)
-                    val needleDeg = 145f + revWave * 245f
-                    val needleRad = Math.toRadians(needleDeg.toDouble())
-                    val nLen = radius * 0.42f
-                    val nx = cx + cos(needleRad).toFloat() * nLen
-                    val ny = cy + sin(needleRad).toFloat() * nLen
-                    needlePaint.color = Color.argb(135, 255, 20, 100)
-                    needlePaint.strokeWidth = (radius * 0.045f).coerceAtLeast(3f)
-                    canvas.drawLine(cx, cy, nx, ny, needlePaint)
-                    needlePaint.color = Color.argb(235, 255, 210, 235)
-                    needlePaint.strokeWidth = (radius * 0.018f).coerceAtLeast(1.5f)
-                    canvas.drawLine(cx, cy, nx, ny, needlePaint)
-                }
-
-                ProMotionProfile.ARMILLARY_3D_GYRO -> {
-                    val dir = if ((item?.index ?: 0) % 2 == 0) 1f else -1f
-                    val outerAng = (t * 34f * dir) % 360f
-                    val midAng = (t * -62f * dir + sin(t * 1.6f + idxSeed) * 14f) % 360f
-                    val innerAng = (t * 88f * dir) % 360f
-
-                    val outerSx = 1.0f + 0.032f * cos(t * 2.1f + idxSeed)
-                    val outerSy = 1.0f - 0.032f * cos(t * 2.1f + idxSeed)
-                    val midSx = 1.0f - 0.048f * sin(t * 2.7f + idxSeed)
-                    val midSy = 1.0f + 0.048f * sin(t * 2.7f + idxSeed)
-                    val innerScale = 1.0f + 0.045f * sin(t * 3.8f + idxSeed)
-
-                    basePaint.alpha = 255
-                    // Outer ring
-                    canvas.save()
-                    canvas.rotate(outerAng, cx, cy)
-                    canvas.scale(outerSx, outerSy, cx, cy)
-                    canvas.drawBitmap(layers.outerRing, fullBmpSrcRect, dstRect, basePaint)
-                    canvas.restore()
-
-                    // Mid ring (3D gimbal counter-orbit)
-                    canvas.save()
-                    canvas.rotate(midAng, cx, cy)
-                    canvas.scale(midSx, midSy, cx, cy)
-                    canvas.drawBitmap(layers.midRing, fullBmpSrcRect, dstRect, basePaint)
-                    canvas.restore()
-
-                    // Inner core
-                    canvas.save()
-                    canvas.rotate(innerAng, cx, cy)
-                    canvas.scale(innerScale, innerScale, cx, cy)
-                    canvas.drawBitmap(layers.innerCore, fullBmpSrcRect, dstRect, basePaint)
-                    canvas.restore()
-
-                    // Additive HDR counter-interference bloom of the real design
-                    val bloomPulse = 0.5f + 0.5f * sin(t * 3.5f + idxSeed)
-                    additiveBitmapPaint.alpha = (75f + 55f * bloomPulse).toInt().coerceIn(55, 135)
-                    canvas.save()
-                    canvas.rotate(-midAng * 0.65f, cx, cy)
-                    val bs = 1.02f + 0.03f * bloomPulse
-                    canvas.scale(bs, bs, cx, cy)
-                    canvas.drawBitmap(lBmp, fullBmpSrcRect, dstRect, additiveBitmapPaint)
-                    canvas.restore()
-                }
-
-                ProMotionProfile.PLASMA_VORTEX_PORTAL -> {
-                    val dir = if ((item?.index ?: 0) % 2 == 0) 1f else -1f
-                    val outerAng = (t * 44f * dir) % 360f
-                    val midAng = (t * -76f * dir) % 360f
-                    val innerAng = (t * 112f * dir) % 360f
-
-                    val outerScale = 1.0f + 0.03f * sin(t * 2.4f + idxSeed)
-                    val midScale = 1.0f + 0.045f * cos(t * 3.1f + idxSeed)
-                    val innerScale = 1.0f + 0.055f * sin(t * 4.2f + idxSeed)
-
-                    basePaint.alpha = 255
-                    canvas.save()
-                    canvas.rotate(outerAng, cx, cy)
-                    canvas.scale(outerScale, outerScale, cx, cy)
-                    canvas.drawBitmap(layers.outerRing, fullBmpSrcRect, dstRect, basePaint)
-                    canvas.restore()
-
-                    canvas.save()
-                    canvas.rotate(midAng, cx, cy)
-                    canvas.scale(midScale, midScale, cx, cy)
-                    canvas.drawBitmap(layers.midRing, fullBmpSrcRect, dstRect, basePaint)
-                    canvas.restore()
-
-                    canvas.save()
-                    canvas.rotate(innerAng, cx, cy)
-                    canvas.scale(innerScale, innerScale, cx, cy)
-                    canvas.drawBitmap(layers.innerCore, fullBmpSrcRect, dstRect, basePaint)
-                    canvas.restore()
-
-                    // Dual-wave additive HDR photonic shimmer using the real design's filaments
-                    val pulse = 0.5f + 0.5f * sin(t * 4.0f + idxSeed)
-                    additiveBitmapPaint.alpha = (85f + 60f * pulse).toInt().coerceIn(65, 150)
-                    canvas.save()
-                    canvas.rotate((t * -52f * dir) % 360f, cx, cy)
-                    val bs = 1.03f + 0.035f * pulse
-                    canvas.scale(bs, bs, cx, cy)
-                    canvas.drawBitmap(lBmp, fullBmpSrcRect, dstRect, additiveBitmapPaint)
-                    canvas.restore()
-                }
-
-                ProMotionProfile.STAR_RADAR_GRID,
-                ProMotionProfile.CYBER_SEGMENTED_HUD,
-                ProMotionProfile.ATLAS_VIDEO -> {
-                    val dir = if ((item?.index ?: 0) % 2 == 0) 1f else -1f
-                    val outerAng = (t * 30f * dir + sin(t * 1.4f + idxSeed) * 8f) % 360f
-                    val midAng = (t * -58f * dir) % 360f
-                    val innerAng = (t * 74f * dir) % 360f
-
-                    val outerScale = 1.0f + 0.022f * sin(t * 2.2f + idxSeed)
-                    val midScale = 1.0f + 0.04f * cos(t * 2.9f + idxSeed)
-                    val innerScale = 1.0f + 0.048f * sin(t * 3.7f + idxSeed)
-
-                    basePaint.alpha = 255
-                    canvas.save()
-                    canvas.rotate(outerAng, cx, cy)
-                    canvas.scale(outerScale, outerScale, cx, cy)
-                    canvas.drawBitmap(layers.outerRing, fullBmpSrcRect, dstRect, basePaint)
-                    canvas.restore()
-
-                    canvas.save()
-                    canvas.rotate(midAng, cx, cy)
-                    canvas.scale(midScale, midScale, cx, cy)
-                    canvas.drawBitmap(layers.midRing, fullBmpSrcRect, dstRect, basePaint)
-                    canvas.restore()
-
-                    canvas.save()
-                    canvas.rotate(innerAng, cx, cy)
-                    canvas.scale(innerScale, innerScale, cx, cy)
-                    canvas.drawBitmap(layers.innerCore, fullBmpSrcRect, dstRect, basePaint)
-                    canvas.restore()
-
-                    // Additive HDR self-bloom pass of the real design
-                    val pulse = 0.5f + 0.5f * sin(t * 3.6f + idxSeed)
-                    additiveBitmapPaint.alpha = (72f + 52f * pulse).toInt().coerceIn(55, 130)
-                    canvas.save()
-                    canvas.rotate(outerAng, cx, cy)
-                    val bs = 1.02f + 0.025f * pulse
-                    canvas.scale(bs, bs, cx, cy)
-                    canvas.drawBitmap(lBmp, fullBmpSrcRect, dstRect, additiveBitmapPaint)
-                    canvas.restore()
-                }
+                val revWave = 0.5f + 0.5f * sin(t * 2.5f + sin(t * 1.3f) * 0.6f)
+                val needleDeg = 145f + revWave * 245f
+                val needleRad = Math.toRadians(needleDeg.toDouble())
+                val nLen = radius * 0.42f
+                val nx = cx + cos(needleRad).toFloat() * nLen
+                val ny = cy + sin(needleRad).toFloat() * nLen
+                needlePaint.color = Color.argb(135, 255, 20, 100)
+                needlePaint.strokeWidth = (radius * 0.045f).coerceAtLeast(3f)
+                canvas.drawLine(cx, cy, nx, ny, needlePaint)
+                needlePaint.color = Color.argb(235, 255, 210, 235)
+                needlePaint.strokeWidth = (radius * 0.018f).coerceAtLeast(1.5f)
+                canvas.drawLine(cx, cy, nx, ny, needlePaint)
             }
-        } else {
-            // Instant fallback while concentric layers are building on the background thread
-            fullBmpSrcRect.set(0, 0, bmp.width, bmp.height)
-            val baseAng = if (profile == ProMotionProfile.SPEEDOMETER_HUD) {
-                sin(t * 2.2f) * 4f
-            } else {
-                (t * 42f) % 360f
+
+            // 1-Layer Intact Continuous Designs: never slice across lightning bolts, wave ribbons, star contours or particle arcs
+            ProMotionProfile.ELECTRIC_PLASMA_LIGHTNING -> {
+                val mainAng = (t * 58f * dir + sin(t * 3.8f + idxSeed) * 6f) % 360f
+                val pulseScale = 1.0f + 0.032f * sin(t * 5.4f + idxSeed)
+                val surgeFlicker = 0.5f + 0.5f * sin(t * 14.0f + idxSeed) * cos(t * 9.5f)
+                val bloomAlpha = (48f + 68f * surgeFlicker).toInt()
+                drawIntactWholeDesign(canvas, bmp, cx, cy, mainAng, pulseScale, pulseScale, bloomAlpha)
             }
-            val scale = 1.0f + 0.03f * sin(t * 3.0f)
-            basePaint.alpha = 255
-            canvas.save()
-            canvas.rotate(baseAng, cx, cy)
-            canvas.scale(scale, scale, cx, cy)
-            canvas.drawBitmap(bmp, fullBmpSrcRect, dstRect, basePaint)
-            additiveBitmapPaint.alpha = 90
-            canvas.scale(1.03f, 1.03f, cx, cy)
-            canvas.drawBitmap(bmp, fullBmpSrcRect, dstRect, additiveBitmapPaint)
-            canvas.restore()
+
+            ProMotionProfile.CONTINUOUS_WAVE_TORUS -> {
+                val mainAng = (t * 48f * dir) % 360f
+                val sx = 1.0f + 0.028f * sin(t * 2.8f + idxSeed)
+                val sy = 1.0f + 0.028f * cos(t * 2.8f + idxSeed)
+                val bloomAlpha = (45f + 45f * (0.5f + 0.5f * sin(t * 4.0f + idxSeed))).toInt()
+                drawIntactWholeDesign(canvas, bmp, cx, cy, mainAng, sx, sy, bloomAlpha)
+            }
+
+            ProMotionProfile.ORBITAL_STARFIELD_RING -> {
+                val mainAng = (t * 38f * dir) % 360f
+                val breath = 1.0f + 0.024f * sin(t * 3.1f + idxSeed)
+                val twinkle = 0.5f + 0.5f * sin(t * 6.2f + idxSeed)
+                val bloomAlpha = (42f + 52f * twinkle).toInt()
+                drawIntactWholeDesign(canvas, bmp, cx, cy, mainAng, breath, breath, bloomAlpha)
+            }
+
+            ProMotionProfile.STAR_WAVE_CONTOUR -> {
+                val mainAng = (t * 42f * dir + sin(t * 1.8f + idxSeed) * 8f) % 360f
+                val starBreath = 1.0f + 0.030f * sin(t * 3.4f + idxSeed)
+                val bloomAlpha = (48f + 42f * (0.5f + 0.5f * cos(t * 3.8f + idxSeed))).toInt()
+                drawIntactWholeDesign(canvas, bmp, cx, cy, mainAng, starBreath, starBreath, bloomAlpha)
+            }
+
+            // 2-Layer Natural-Gap Designs: split strictly at the natural empty radial gap
+            ProMotionProfile.SPIROGRAPH_BRAID_TORUS -> {
+                val outerAng = (t * 44f * dir) % 360f
+                val innerAng = (t * -72f * dir) % 360f
+                val outerScale = 1.0f + 0.022f * sin(t * 2.9f + idxSeed)
+                val innerScale = 1.0f + 0.035f * cos(t * 3.7f + idxSeed)
+                val bloom = (46f + 38f * (0.5f + 0.5f * sin(t * 3.6f + idxSeed))).toInt()
+
+                drawRingLayer(canvas, useLayers?.outerRing, bmp, spiroOuterClipPath, cx, cy, outerAng, outerScale, outerScale, bloom)
+                drawRingLayer(canvas, useLayers?.innerCore, bmp, spiroInnerClipPath, cx, cy, innerAng, innerScale, innerScale, bloom)
+            }
+
+            ProMotionProfile.POLYGON_APERTURE_IRIS -> {
+                // Entire nested polygon aperture (0..0.62) rotates intact as one geometric iris; outer dot ring counter-rotates
+                val outerDotsAng = (t * -34f * dir) % 360f
+                val irisAng = (t * 52f * dir + sin(t * 2.0f + idxSeed) * 10f) % 360f
+                val outerScale = 1.0f + 0.018f * cos(t * 2.4f + idxSeed)
+                val irisScale = 1.0f + 0.034f * sin(t * 3.5f + idxSeed)
+                val bloom = (48f + 38f * (0.5f + 0.5f * sin(t * 3.8f + idxSeed))).toInt()
+
+                drawRingLayer(canvas, useLayers?.outerRing, bmp, polyOuterClipPath, cx, cy, outerDotsAng, outerScale, outerScale, bloom)
+                drawRingLayer(canvas, useLayers?.innerCore, bmp, polyInnerClipPath, cx, cy, irisAng, irisScale, irisScale, bloom)
+            }
+
+            ProMotionProfile.EQUALIZER_WAVEFORM_HUD -> {
+                // Outer radial equalizer sunburst (0.40..1.0) spins & pulses; center horizontal sine wave (0..0.40) stays upright!
+                val eqSunburstAng = (t * 50f * dir) % 360f
+                val eqBeatScale = 1.0f + 0.032f * sin(t * 5.6f + idxSeed)
+                val waveTilt = sin(t * 2.2f + idxSeed) * 3.5f
+                val waveSx = 1.0f + 0.015f * cos(t * 4.2f + idxSeed)
+                val waveSy = 1.0f + 0.062f * sin(t * 6.8f + idxSeed)
+                val bloom = (50f + 42f * (0.5f + 0.5f * sin(t * 5.6f + idxSeed))).toInt()
+
+                drawRingLayer(canvas, useLayers?.outerRing, bmp, eqOuterClipPath, cx, cy, eqSunburstAng, eqBeatScale, eqBeatScale, bloom)
+                drawRingLayer(canvas, useLayers?.innerCore, bmp, eqInnerClipPath, cx, cy, waveTilt, waveSx, waveSy, bloom)
+            }
+
+            ProMotionProfile.BRAIDED_LATTICE_DOTS -> {
+                // Inner braided wave lattice (0..0.81) rotates intact; dual outer stipple dot rings (0.81..1.0) counter-rotate
+                val outerDotsAng = (t * -38f * dir) % 360f
+                val latticeAng = (t * 54f * dir) % 360f
+                val outerScale = 1.0f + 0.020f * cos(t * 2.6f + idxSeed)
+                val latticeScale = 1.0f + 0.028f * sin(t * 3.3f + idxSeed)
+                val bloom = (52f + 40f * (0.5f + 0.5f * sin(t * 3.9f + idxSeed))).toInt()
+
+                drawRingLayer(canvas, useLayers?.outerRing, bmp, latticeOuterClipPath, cx, cy, outerDotsAng, outerScale, outerScale, bloom)
+                drawRingLayer(canvas, useLayers?.innerCore, bmp, latticeInnerClipPath, cx, cy, latticeAng, latticeScale, latticeScale, bloom)
+            }
+
+            // 3-Layer Natural-Gap HUD & PCB Designs: counter-rotate cleanly along their two natural empty radial gaps
+            ProMotionProfile.CYBER_PCB_CIRCUIT -> {
+                val outerAng = (t * 32f * dir) % 360f
+                val midAng = (t * -56f * dir) % 360f
+                val innerAng = (t * 78f * dir) % 360f
+                val outerScale = 1.0f + 0.018f * sin(t * 2.3f + idxSeed)
+                val midScale = 1.0f + 0.026f * cos(t * 3.1f + idxSeed)
+                val innerScale = 1.0f + 0.034f * sin(t * 4.0f + idxSeed)
+                val bloom = (48f + 38f * (0.5f + 0.5f * sin(t * 4.2f + idxSeed))).toInt()
+
+                drawRingLayer(canvas, useLayers?.outerRing, bmp, pcbOuterClipPath, cx, cy, outerAng, outerScale, outerScale, bloom)
+                drawRingLayer(canvas, useLayers?.midRing, bmp, pcbMidClipPath, cx, cy, midAng, midScale, midScale, bloom)
+                drawRingLayer(canvas, useLayers?.innerCore, bmp, pcbInnerClipPath, cx, cy, innerAng, innerScale, innerScale, bloom)
+            }
+
+            ProMotionProfile.HUD_RETICLE_CROSSHAIRS,
+            ProMotionProfile.ATLAS_VIDEO -> {
+                val outerAng = (t * 28f * dir + sin(t * 1.5f + idxSeed) * 6f) % 360f
+                val midAng = (t * -54f * dir) % 360f
+                val innerAng = (t * 72f * dir) % 360f
+                val outerScale = 1.0f + 0.020f * sin(t * 2.2f + idxSeed)
+                val midScale = 1.0f + 0.028f * cos(t * 2.9f + idxSeed)
+                val innerScale = 1.0f + 0.036f * sin(t * 3.7f + idxSeed)
+                val bloom = (46f + 36f * (0.5f + 0.5f * sin(t * 3.6f + idxSeed))).toInt()
+
+                drawRingLayer(canvas, useLayers?.outerRing, bmp, hudOuterClipPath, cx, cy, outerAng, outerScale, outerScale, bloom)
+                drawRingLayer(canvas, useLayers?.midRing, bmp, hudMidClipPath, cx, cy, midAng, midScale, midScale, bloom)
+                drawRingLayer(canvas, useLayers?.innerCore, bmp, hudInnerClipPath, cx, cy, innerAng, innerScale, innerScale, bloom)
+            }
         }
 
-        // 5. Subtle expanding optical biometric shockwave ripple synced to the animation phase
+        // Subtle biometric optical ripple synced to the animation phase
         val wavePhase = (t * 0.65f + idxSeed) % 1.0f
         val waveRadius = radius * (0.18f + wavePhase * 0.76f)
-        val waveAlpha = ((1f - wavePhase) * (1f - wavePhase) * 95f).toInt().coerceIn(0, 95)
+        val waveAlpha = ((1f - wavePhase) * (1f - wavePhase) * 75f).toInt().coerceIn(0, 75)
         if (waveAlpha > 4) {
             val r = (accentColor shr 16) and 0xFF
             val g = (accentColor shr 8) and 0xFF
             val b = accentColor and 0xFF
             additiveFxPaint.color = Color.argb(waveAlpha, r, g, b)
-            additiveFxPaint.strokeWidth = (radius * 0.022f * (1f - wavePhase * 0.5f)).coerceAtLeast(1.5f)
+            additiveFxPaint.strokeWidth = (radius * 0.016f * (1f - wavePhase * 0.5f)).coerceAtLeast(1.2f)
             canvas.drawCircle(cx, cy, waveRadius, additiveFxPaint)
         }
     }
@@ -1628,7 +1758,9 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
 @Suppress("DEPRECATION")
 class OverlayAnimHostView(context: Context) : FrameLayout(context) {
 
-    val lottieView: LottieAnimationView = LottieAnimationView(context).apply {
+    val lottieView: LottieAnimationView = LottieAnimationView(
+        android.view.ContextThemeWrapper(context, R.style.Theme_MyApplication)
+    ).apply {
         setRenderMode(RenderMode.HARDWARE)
         setCacheComposition(true)
         setIgnoreDisabledSystemAnimations(true)

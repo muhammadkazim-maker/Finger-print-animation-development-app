@@ -11,16 +11,26 @@ import rikka.shizuku.Shizuku
 
 object ShizukuBridge {
     private const val TAG = "FPAnim"
-    private const val SERVICE_VERSION = 6
+    private const val SERVICE_VERSION = 10
 
     @Volatile var service: ITouchService? = null
     @Volatile var onTouch: ((Boolean) -> Unit)? = null
+    @Volatile var onFingerprintError: (() -> Unit)? = null
+    @Volatile var onBiometricPromptStateChanged: ((Boolean) -> Unit)? = null
     @Volatile private var lastInteractive: Boolean = true
     private lateinit var app: Context
 
     private val listener = object : ITouchListener.Stub() {
         override fun onZoneTouch(down: Boolean) {
             onTouch?.invoke(down)
+        }
+
+        override fun onFingerprintError() {
+            onFingerprintError?.invoke()
+        }
+
+        override fun onBiometricPromptStateChanged(active: Boolean) {
+            onBiometricPromptStateChanged?.invoke(active)
         }
     }
 
@@ -112,8 +122,8 @@ object ShizukuBridge {
         if (!::app.isInitialized) return
         val c = Prefs.load(app)
         try {
-            // High-sensitivity radius matching the full calibrated sensor area + initial thumb edge contact
-            val radius = (c.size * 0.74f).coerceIn(0.11f, 0.32f)
+            // Strictly match the inner physical sensor circle (sensorSize / 2f)
+            val radius = (c.sensorSize * 0.5f).coerceIn(0.02f, 0.18f)
             service?.setZone(c.cx, c.cy, radius)
         } catch (e: Exception) {
             Log.d(TAG, "applyZone error: ${e.message}")

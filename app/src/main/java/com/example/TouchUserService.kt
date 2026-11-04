@@ -14,6 +14,7 @@ class TouchUserService : ITouchService.Stub() {
     @Volatile private var running = false
     @Volatile private var lastDispatched = false
     @Volatile private var proc: java.lang.Process? = null
+    @Volatile private var logcatProc: java.lang.Process? = null
 
     override fun destroy() {
         stop()
@@ -92,12 +93,27 @@ class TouchUserService : ITouchService.Stub() {
                 priority = Thread.MAX_PRIORITY
             }.start()
         }
+
+        // Real-time fingerprint mismatch / error logcat stream monitor
+        Thread {
+            try {
+                monitorFingerprintErrors()
+            } catch (t: Throwable) {
+                Log.d(TAG, "monitorFingerprintErrors ended: ${t.message}")
+            }
+        }.apply {
+            name = "FPAnim-FpErrorWatch"
+            isDaemon = true
+            priority = Thread.MIN_PRIORITY
+        }.start()
     }
 
     override fun stop() {
         running = false
         proc?.destroy()
         proc = null
+        logcatProc?.destroy()
+        logcatProc = null
     }
 
     @Synchronized
@@ -108,6 +124,76 @@ class TouchUserService : ITouchService.Stub() {
                 listener?.onZoneTouch(inside)
             } catch (_: Exception) {
             }
+        }
+    }
+
+    private fun monitorFingerprintErrors() {
+        val cmd = arrayOf(
+            "logcat", "-T", "1", "-v", "brief",
+            "FingerprintService:V", "BiometricService:V", "KeyguardUpdateMonitor:V",
+            "AuthController:V", "UdfpsController:V", "FingerprintHal:V",
+            "BiometricPrompt:V", "FingerprintManager:V", "*:S"
+        )
+        val process = try {
+            ProcessBuilder(*cmd).redirectErrorStream(true).start().also { logcatProc = it }
+        } catch (_: Exception) {
+            return
+        }
+        val reader = BufferedReader(InputStreamReader(process.inputStream))
+        try {
+            while (running) {
+                val line = reader.readLine() ?: break
+                val lower = line.lowercase()
+
+                // 1. Detect genuine mismatch / recognition failure events
+                if (lower.contains("onauthenticationfailed") ||
+                    lower.contains("onauthenticated(false)") ||
+                    lower.contains("authenticated=false") ||
+                    lower.contains("authenticated(false)") ||
+                    lower.contains("auth_failed") ||
+                    lower.contains("handleauthenticated(false)") ||
+                    lower.contains("onfingerprintauthenticated(false)") ||
+                    lower.contains("not recognized") ||
+                    lower.contains("mismatch") ||
+                    lower.contains("not match") ||
+                    lower.contains("try again")
+                ) {
+                    try {
+                        listener?.onFingerprintError()
+                    } catch (_: Exception) {}
+                }
+
+                // 2. Detect when an app on the unlocked phone starts or ends biometric verification
+                if (lower.contains("startauthentication") ||
+                    lower.contains("showauthenticationdialog") ||
+                    lower.contains("showdialog") ||
+                    lower.contains("showudfps") ||
+                    lower.contains("onauthenticationstarted") ||
+                    lower.contains("prepareforauthentication") ||
+                    lower.contains("starting authentication") ||
+                    lower.contains("authenticate(")
+                ) {
+                    try {
+                        listener?.onBiometricPromptStateChanged(true)
+                    } catch (_: Exception) {}
+                } else if (
+                    lower.contains("stopauthentication") ||
+                    lower.contains("cancelauthentication") ||
+                    lower.contains("dismissauthenticationdialog") ||
+                    lower.contains("hideudfps") ||
+                    lower.contains("onauthenticationsucceeded") ||
+                    lower.contains("onauthenticated(true)") ||
+                    lower.contains("authenticated=true") ||
+                    lower.contains("ondismissed") ||
+                    lower.contains("client stopped")
+                ) {
+                    try {
+                        listener?.onBiometricPromptStateChanged(false)
+                    } catch (_: Exception) {}
+                }
+            }
+        } finally {
+            runCatching { process.destroy() }
         }
     }
 
@@ -300,10 +386,14 @@ class TouchUserService : ITouchService.Stub() {
                             ABS_MT_TRACKING_ID -> {
                                 if (value == -1) {
                                     on[slot] = false
+                                    x[slot] = -1
+                                    y[slot] = -1
                                     hasXThisTouch[slot] = false
                                     hasYThisTouch[slot] = false
                                 } else {
                                     on[slot] = true
+                                    x[slot] = -1
+                                    y[slot] = -1
                                     hasXThisTouch[slot] = false
                                     hasYThisTouch[slot] = false
                                 }
@@ -335,6 +425,8 @@ class TouchUserService : ITouchService.Stub() {
                                 if (value == 0) {
                                     for (i in 0 until n) {
                                         on[i] = false
+                                        x[i] = -1
+                                        y[i] = -1
                                         hasXThisTouch[i] = false
                                         hasYThisTouch[i] = false
                                     }
