@@ -6,48 +6,43 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.SharedPreferences
+import android.graphics.Color
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.os.Build
 import android.os.Handler
-import android.os.HandlerThread
 import android.os.Looper
 import android.os.PowerManager
-import android.os.SystemClock
-import android.util.Log
 import android.view.Display
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
+import android.widget.FrameLayout
 import kotlin.math.roundToInt
 
 class FpAccessibilityService : AccessibilityService() {
 
     companion object {
-        private const val TAG = "FpAccService"
-        @Volatile var instance: FpAccessibilityService? = null
-        @Volatile var isRunning: Boolean = false
-        @Volatile var lastTriggerSource: String = "Idle (waiting for sensor)"
-
-        fun refreshOverlayIfRunning() {
-            val inst = instance ?: return
-            inst.reload()
-        }
+        @Volatile
+        var instance: FpAccessibilityService? = null
+            private set
 
         @Suppress("DEPRECATION")
         fun buildOverlayFlags(activePlayback: Boolean): Int {
             var flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                    WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-                    WindowManager.LayoutParams.FLAG_ALLOW_LOCK_WHILE_SCREEN_ON or
-                    WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                WindowManager.LayoutParams.FLAG_ALLOW_LOCK_WHILE_SCREEN_ON or
+                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
+
             if (activePlayback) {
                 flags = flags or
-                        WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
-                        WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                    WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
+                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
             }
             return flags
         }
@@ -62,13 +57,13 @@ class FpAccessibilityService : AccessibilityService() {
             return WindowManager.LayoutParams(
                 widthPx,
                 heightPx,
+                xPx,
+                yPx,
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
                 buildOverlayFlags(activePlayback),
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = Gravity.TOP or Gravity.START
-                x = xPx
-                y = yPx
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                     layoutInDisplayCutoutMode =
                         WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
@@ -80,460 +75,738 @@ class FpAccessibilityService : AccessibilityService() {
     private lateinit var wm: WindowManager
     private lateinit var km: KeyguardManager
     private lateinit var pm: PowerManager
-    private lateinit var dm: DisplayManager
-    private val ui = Handler(Looper.getMainLooper())
+    private var dm: DisplayManager? = null
+    private lateinit var prefs: SharedPreferences
+    private val mainHandler = Handler(Looper.getMainLooper())
 
-    private var bgThread: HandlerThread? = null
-    private var bgHandler: Handler? = null
+    private var overlayContainer: FrameLayout? = null
+    private var animHostView: OverlayAnimHostView? = null
+    private var overlayLp: WindowManager.LayoutParams? = null
+    private var isOverlayAttached = false
+    private var isShowing = false
+    private var activeWakeLock: PowerManager.WakeLock? = null
 
-    private var overlayView: OverlayAnimHostView? = null
-    private var lp: WindowManager.LayoutParams? = null
-    private var attached = false
+    /**
+     * Single event-driven gate state holder:
+     *   visible = fingerDown && requestActive && !latchedTerminal
+     */
+    val gate = BiometricGateState()
 
-    @Volatile private var fingerDownOnSensor = false
-    @Volatile private var isShowingAnim = false
-    @Volatile private var shownOnLockscreen = false
-    @Volatile private var shownAtUptimeMs = 0L
-    @Volatile private var lastFingerDownAtMs = 0L
-    @Volatile private var isBiometricPromptActive = false
-    @Volatile private var suppressedByError = false
+    /**
+     * Tracks the windowId of the currently active unlocked-screen BiometricPrompt / UDFPS dialog
+     * so we can detect when that window closes via TYPE_WINDOWS_CHANGED or TYPE_WINDOW_STATE_CHANGED.
+     */
+    @Volatile
+    private var activeBiometricPromptWindowId: Int = -1
 
-    private var currentAnimIdLoaded: String? = null
-    private var currentVideoAssetLoaded: String? = null
-    private var currentSpeedLoaded: Float = -1f
-    private var currentSizeFracLoaded: Float = -1f
-    private var currentCenterXFracLoaded: Float = -1f
-    private var currentCenterYFracLoaded: Float = -1f
+    /**
+     * Hard fail-safe runnable: guarantees the overlay never stays visible longer than
+     * BiometricSignatures.MAX_OVERLAY_DURATION_MS (3,000 ms) if no end signal arrives.
+     */
+    private val hardMaxDurationFailSafe = Runnable {
+        if (isShowing || gate.fingerDown) {
+            DiagnosticLogger.log(
+                "FAILSAFE",
+                "Hard max duration (${BiometricSignatures.MAX_OVERLAY_DURATION_MS}ms) reached; latching terminal & hiding overlay",
+                gate
+            )
+            gate.latchTerminal("hard_timeout_3s")
+            syncOverlayWithGate(reason = "hard_timeout_3s")
+        }
+    }
 
-    private var lockStateReceiverRegistered = false
+    private val clearUnlockedPromptRunnable = Runnable {
+        if (!gate.fingerDown && gate.unlockedPromptRequestActive) {
+            activeBiometricPromptWindowId = -1
+            gate.updateEnvironment(
+                isLockOrAod = isLockOrAodState(),
+                canAcceptLockScreenFp = canAcceptLockScreenFingerprint(),
+                isUnlockedPromptActive = false
+            )
+            DiagnosticLogger.log("PROMPT_EXPIRE", "Unlocked biometric prompt expired after inactivity", gate)
+            syncOverlayWithGate(reason = "prompt_expired")
+        }
+    }
 
-    private val lockStateReceiver = object : BroadcastReceiver() {
+    private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == "debug_diag_enabled") {
+            DiagnosticLogger.enabled = Prefs.isDebugDiagEnabled(this)
+            DiagnosticLogger.log("DIAG", "DEBUG Diagnostic Mode toggled On", gate)
+            return@OnSharedPreferenceChangeListener
+        }
+        mainHandler.post {
+            reload()
+        }
+    }
+
+    private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
                 Intent.ACTION_USER_PRESENT -> {
+                    // Device unlocked! Immediately latch terminal and hide overlay.
+                    activeBiometricPromptWindowId = -1
+                    gate.clearLockScreenRestriction()
+                    gate.updateEnvironment(
+                        isLockOrAod = false,
+                        canAcceptLockScreenFp = false,
+                        isUnlockedPromptActive = false,
+                        isLockScreenPinOnly = false
+                    )
+                    gate.latchTerminal("unlock_success")
+                    DiagnosticLogger.log(
+                        "BROADCAST",
+                        "ACTION_USER_PRESENT (device unlocked) -> latchTerminal(unlock_success)",
+                        gate
+                    )
+                    syncOverlayWithGate(reason = "ACTION_USER_PRESENT")
                     ShizukuBridge.setScreenInteractive(true)
-                    isBiometricPromptActive = false
-                    // When the phone gets unlocked it disappears immediately!
-                    hide("device unlocked")
                 }
                 Intent.ACTION_SCREEN_ON -> {
+                    val onLock = isLockOrAodState()
+                    gate.updateEnvironment(
+                        isLockOrAod = onLock,
+                        canAcceptLockScreenFp = canAcceptLockScreenFingerprint(),
+                        isUnlockedPromptActive = gate.unlockedPromptRequestActive
+                    )
+                    DiagnosticLogger.log(
+                        "BROADCAST",
+                        "ACTION_SCREEN_ON (keyguardLocked=${km.isKeyguardLocked}, interactive=${pm.isInteractive})",
+                        gate
+                    )
+                    syncOverlayWithGate(reason = "ACTION_SCREEN_ON")
+                    ensurePersistentOverlayAttached()
                     ShizukuBridge.setScreenInteractive(true)
+                    ShizukuBridge.tryBind()
                 }
                 Intent.ACTION_SCREEN_OFF -> {
+                    // Screen turned off: fail-safe requires removing/hiding the overlay immediately.
+                    activeBiometricPromptWindowId = -1
+                    gate.updateEnvironment(
+                        isLockOrAod = true,
+                        canAcceptLockScreenFp = false,
+                        isUnlockedPromptActive = false
+                    )
+                    gate.latchTerminal("screen_off")
+                    DiagnosticLogger.log(
+                        "BROADCAST",
+                        "ACTION_SCREEN_OFF (keyguardLocked=${km.isKeyguardLocked}) -> hide immediately",
+                        gate
+                    )
+                    syncOverlayWithGate(reason = "ACTION_SCREEN_OFF")
                     ShizukuBridge.setScreenInteractive(false)
-                    isBiometricPromptActive = false
-                    hide("screen off")
                 }
             }
         }
     }
 
-    private val fingerUpHideTask = Runnable {
-        if (!fingerDownOnSensor && isShowingAnim) {
-            hide("finger lifted")
-        }
+    private fun isLockOrAodState(): Boolean {
+        return km.isKeyguardLocked || !pm.isInteractive
     }
 
-    private val safetyMaxDurationHideTask = Runnable {
-        if (isShowingAnim && !fingerDownOnSensor) {
-            hide("max duration reached")
-        }
+    /**
+     * Checks whether the lock screen can currently accept fingerprint authentication.
+     * Returns false if the lock screen is not locked, or if we detected a lockout / PIN-only /
+     * first-unlock-after-reboot message on the keyguard.
+     */
+    private fun canAcceptLockScreenFingerprint(): Boolean {
+        if (!isLockOrAodState()) return false
+        if (gate.lockScreenRestrictedPinOnly) return false
+        return true
     }
 
-    // Ultra-lightweight active monitor (only runs while animation is visibly playing)
-    private val bgActiveMonitor = object : Runnable {
-        override fun run() {
-            if (!isShowingAnim) return
-            if (!fingerDownOnSensor) {
-                hide("touch released")
-                return
-            }
-            bgHandler?.postDelayed(this, 100L)
+    /**
+     * Evaluates `gate.visible` (`fingerDown && requestActive && !latchedTerminal`)
+     * and shows or hides the overlay accordingly.
+     */
+    private fun syncOverlayWithGate(reason: String) {
+        val shouldShow = gate.visible
+        if (shouldShow) {
+            showImmediate(onLock = gate.onLockOrAod, reason = reason)
+        } else {
+            hideImmediate(reason = reason)
         }
     }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
-        isRunning = true
-        lastTriggerSource = "Service active"
-        wm = getSystemService(WINDOW_SERVICE) as WindowManager
-        km = getSystemService(KEYGUARD_SERVICE) as KeyguardManager
-        pm = getSystemService(POWER_SERVICE) as PowerManager
-        dm = getSystemService(DISPLAY_SERVICE) as DisplayManager
+        wm = getSystemService(WindowManager::class.java)
+        km = getSystemService(KeyguardManager::class.java)
+        pm = getSystemService(PowerManager::class.java)
+        dm = getSystemService(DisplayManager::class.java)
 
-        bgThread = HandlerThread("FpOverlayWorker").apply {
-            start()
-            bgHandler = Handler(looper)
+        DiagnosticLogger.enabled = Prefs.isDebugDiagEnabled(this)
+
+        prefs = getSharedPreferences("fp", Context.MODE_PRIVATE)
+        prefs.registerOnSharedPreferenceChangeListener(prefsListener)
+
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_USER_PRESENT)
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_SCREEN_OFF)
         }
-
-        val activeVideo = Prefs.getSelectedVideoAsset(this)
-        ProVideoFrameCache.pinActiveOverlayAtlas(this, activeVideo)
-
-        buildStandbyOverlay()
-        registerScreenAndUnlockReceivers()
-        setupShizukuCallbacks()
-        ShizukuBridge.init(this)
-        Log.i(TAG, "FpAccessibilityService connected (Pro Folder HD zero-lag mode)")
-    }
-
-    fun reload() {
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            rebuildOverlayWindow(forceReloadAnim = true)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(screenReceiver, filter, Context.RECEIVER_EXPORTED)
         } else {
-            ui.post { rebuildOverlayWindow(forceReloadAnim = true) }
-        }
-    }
-
-    private fun registerScreenAndUnlockReceivers() {
-        if (lockStateReceiverRegistered) return
-        try {
-            val filter = IntentFilter().apply {
-                addAction(Intent.ACTION_USER_PRESENT)
-                addAction(Intent.ACTION_SCREEN_OFF)
-                addAction(Intent.ACTION_SCREEN_ON)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                registerReceiver(lockStateReceiver, filter, Context.RECEIVER_EXPORTED)
-            } else {
-                registerReceiver(lockStateReceiver, filter)
-            }
-            lockStateReceiverRegistered = true
-        } catch (t: Throwable) {
-            Log.w(TAG, "registerReceiver failed: ${t.message}")
-        }
-    }
-
-    private fun buildStandbyOverlay() {
-        rebuildOverlayWindow(forceReloadAnim = true)
-    }
-
-    fun rebuildOverlayWindow(forceReloadAnim: Boolean = false) {
-        if (!this::wm.isInitialized) return
-        val cfg = Prefs.load(this)
-        val bounds = Prefs.getRealDisplayBounds(this)
-        val sw = bounds.width().coerceAtLeast(1)
-        val sh = bounds.height().coerceAtLeast(1)
-
-        val sizePx = (sw * cfg.size).roundToInt().coerceIn(80, sw)
-        val cx = (sw * cfg.cx).roundToInt()
-        val cy = (sh * cfg.cy).roundToInt()
-
-        ShizukuBridge.applyZone()
-
-        val selectedId = Prefs.getSelectedAnimId(this)
-        val selectedVideo = Prefs.getSelectedVideoAsset(this)
-        ProVideoFrameCache.pinActiveOverlayAtlas(this, selectedVideo)
-
-        val needAnimReload = forceReloadAnim ||
-                overlayView == null ||
-                selectedId != currentAnimIdLoaded ||
-                selectedVideo != currentVideoAssetLoaded ||
-                cfg.speed != currentSpeedLoaded ||
-                cfg.size != currentSizeFracLoaded
-
-        val hostView = overlayView ?: OverlayAnimHostView(this).also {
-            overlayView = it
+            registerReceiver(screenReceiver, filter)
         }
 
-        if (needAnimReload) {
-            hostView.bindActiveAnimation(
-                context = this,
-                speed = cfg.speed,
-                targetSizePx = sizePx,
-                autoPlay = isShowingAnim
-            )
-            currentAnimIdLoaded = selectedId
-            currentVideoAssetLoaded = selectedVideo
-            currentSpeedLoaded = cfg.speed
-            currentSizeFracLoaded = cfg.size
-        } else {
-            hostView.setSpeed(cfg.speed)
-        }
+        // Pre-decode active animation on startup
+        ProVideoFrameCache.pinActiveOverlayAtlas(this, Prefs.getSelectedVideoAsset(this))
+        LottiePrewarmCache.prewarmAsync(this)
+        ensurePersistentOverlayAttached()
 
-        if (isShowingAnim) {
-            hostView.visibility = View.VISIBLE
-            hostView.alpha = 1f
-            hostView.playImmediate()
-        } else {
-            hostView.pauseAndResetToFrameZero()
-            hostView.alpha = 0f
-            // Set INVISIBLE when idle so SurfaceFlinger skips compositing the overlay window completely!
-            hostView.visibility = View.INVISIBLE
-        }
-
-        val newLp = buildOverlayLayoutParams(
-            widthPx = sizePx,
-            heightPx = sizePx,
-            xPx = cx - sizePx / 2,
-            yPx = cy - sizePx / 2,
-            activePlayback = isShowingAnim
+        val onLockNow = isLockOrAodState()
+        gate.updateEnvironment(
+            isLockOrAod = onLockNow,
+            canAcceptLockScreenFp = canAcceptLockScreenFingerprint(),
+            isUnlockedPromptActive = false,
+            isLockScreenPinOnly = false
+        )
+        DiagnosticLogger.log(
+            "SERVICE",
+            "FpAccessibilityService connected (keyguardLocked=${km.isKeyguardLocked}, interactive=${pm.isInteractive})",
+            gate
         )
 
-        try {
-            if (!attached) {
-                wm.addView(hostView, newLp)
-                attached = true
-            } else if (
-                lp?.width != newLp.width ||
-                lp?.height != newLp.height ||
-                lp?.x != newLp.x ||
-                lp?.y != newLp.y ||
-                lp?.flags != newLp.flags
-            ) {
-                wm.updateViewLayout(hostView, newLp)
+        // 1. Kernel-level touch callback via Shizuku UserService
+        ShizukuBridge.onTouch = { down ->
+            mainHandler.post {
+                val onLock = isLockOrAodState()
+                if (down) {
+                    gate.updateEnvironment(
+                        isLockOrAod = onLock,
+                        canAcceptLockScreenFp = canAcceptLockScreenFingerprint(),
+                        isUnlockedPromptActive = gate.unlockedPromptRequestActive
+                    )
+                    gate.onFingerDown()
+                    DiagnosticLogger.log(
+                        "TOUCH",
+                        "fingerDown=true (onLock=$onLock, keyguard=${km.isKeyguardLocked}, interactive=${pm.isInteractive})",
+                        gate
+                    )
+                    syncOverlayWithGate(reason = "touch_down")
+                } else {
+                    // Finger lifted: clears fingerDown AND clears latchedTerminal
+                    gate.onFingerUp()
+                    DiagnosticLogger.log(
+                        "TOUCH",
+                        "fingerDown=false (finger lifted -> latchedTerminal cleared)",
+                        gate
+                    )
+                    syncOverlayWithGate(reason = "touch_up")
+                }
             }
-            lp = newLp
-            currentCenterXFracLoaded = cfg.cx
-            currentCenterYFracLoaded = cfg.cy
-        } catch (t: Throwable) {
-            Log.e(TAG, "Overlay attach/update error: ${t.message}")
-            attached = false
         }
+
+        // 2. Real-time fingerprint mismatch / error callback from Shizuku logcat monitor
+        ShizukuBridge.onFingerprintError = {
+            mainHandler.post {
+                gate.latchTerminal("mismatch_error")
+                DiagnosticLogger.log(
+                    "SHIZUKU_ERR",
+                    "onFingerprintError -> latchTerminal(mismatch_error)",
+                    gate
+                )
+                syncOverlayWithGate(reason = "shizuku_mismatch_error")
+            }
+        }
+
+        // 3. Real-time BiometricPrompt / UDFPS session state callback from Shizuku logcat monitor
+        ShizukuBridge.onBiometricPromptStateChanged = { active ->
+            mainHandler.post {
+                val onLock = isLockOrAodState()
+                if (active) {
+                    mainHandler.removeCallbacks(clearUnlockedPromptRunnable)
+                    // Only mark unlockedPromptRequestActive when on the unlocked screen
+                    val unlockedPrompt = !onLock
+                    gate.updateEnvironment(
+                        isLockOrAod = onLock,
+                        canAcceptLockScreenFp = canAcceptLockScreenFingerprint(),
+                        isUnlockedPromptActive = unlockedPrompt
+                    )
+                    DiagnosticLogger.log("SHIZUKU_BIO", "onBiometricPromptStateChanged(active=true, onLock=$onLock)", gate)
+                    syncOverlayWithGate(reason = "shizuku_prompt_active")
+                    if (unlockedPrompt) {
+                        mainHandler.postDelayed(clearUnlockedPromptRunnable, 20_000L)
+                    }
+                } else {
+                    mainHandler.removeCallbacks(clearUnlockedPromptRunnable)
+                    activeBiometricPromptWindowId = -1
+                    gate.latchTerminal("prompt_dismissed")
+                    DiagnosticLogger.log("SHIZUKU_BIO", "onBiometricPromptStateChanged(active=false) -> latchTerminal", gate)
+                    syncOverlayWithGate(reason = "shizuku_prompt_ended")
+                }
+            }
+        }
+
+        ShizukuBridge.init(this)
+        ShizukuBridge.tryBind()
     }
 
     /**
-     * Returns true when the device is on the Lockscreen, Keyguard, or Always-On Display (AOD).
+     * Reloads calibration, sensor trigger radius, and active animation asset whenever changed in UI.
      */
-    private fun isLockOrAodState(): Boolean {
-        val keyguardLocked = try {
-            km.isKeyguardLocked || km.isDeviceLocked
-        } catch (_: Throwable) {
-            false
+    fun reload() {
+        mainHandler.post {
+            syncPrewarmedOverlayPositionAndAsset()
+            ShizukuBridge.applyZone()
         }
-        if (keyguardLocked) return true
-
-        val interactive = try {
-            pm.isInteractive
-        } catch (_: Throwable) {
-            true
-        }
-        if (!interactive) return true
-
-        val displayState = try {
-            dm.getDisplay(Display.DEFAULT_DISPLAY)?.state ?: Display.STATE_ON
-        } catch (_: Throwable) {
-            Display.STATE_ON
-        }
-        return displayState == Display.STATE_DOZE ||
-                displayState == Display.STATE_DOZE_SUSPEND ||
-                displayState == Display.STATE_OFF
     }
 
-    private fun setupShizukuCallbacks() {
-        // Real-time kernel touch callback (strictly constrained to the inner sensor circle)
-        ShizukuBridge.onTouch = { down ->
-            fingerDownOnSensor = down
-            val now = SystemClock.uptimeMillis()
-            if (down) {
-                lastFingerDownAtMs = now
-                ui.removeCallbacks(fingerUpHideTask)
-                // 1. Lock screen / AOD: always active for unlock
-                // 2. Unlocked phone: active when inside the inner sensor circle (unless currently inside our own FP Animator app UI)
-                // 3. Error suppression: do not re-show while finger is still held down after a mismatch error
-                val onLock = isLockOrAodState()
-                val allowedOnUnlocked = !isInOurOwnApp || isBiometricPromptActive
-                if ((onLock || allowedOnUnlocked) && !suppressedByError) {
-                    showImmediate(onLock = onLock)
+    fun triggerTestPreview(durationMs: Long = 2400L) {
+        mainHandler.post {
+            ensurePersistentOverlayAttached()
+            val view = overlayContainer ?: return@post
+            val anim = animHostView ?: return@post
+            val lp = overlayLp ?: return@post
+
+            val calib = Prefs.load(this)
+            val bounds = Prefs.getRealDisplayBounds(this)
+            val w = bounds.width().coerceAtLeast(1080)
+            val h = bounds.height().coerceAtLeast(2400)
+            val sizePx = (calib.size * w).roundToInt().coerceAtLeast(120)
+
+            lp.width = sizePx
+            lp.height = sizePx
+            lp.x = (calib.cx * w - sizePx / 2f).roundToInt()
+            lp.y = (calib.cy * h - sizePx / 2f).roundToInt()
+            lp.flags = buildOverlayFlags(activePlayback = true)
+
+            anim.bindActiveAnimation(this, calib.speed, sizePx, autoPlay = false)
+            anim.playImmediate()
+            view.alpha = 1f
+            view.visibility = View.VISIBLE
+            try {
+                wm.updateViewLayout(view, lp)
+            } catch (_: Throwable) {}
+
+            mainHandler.postDelayed({
+                if (!gate.visible) {
+                    hideImmediate(reason = "test_preview_end")
                 }
-            } else {
-                ui.removeCallbacks(fingerUpHideTask)
-                // Finger lifted off: reset error suppression so the next touch down triggers again cleanly!
-                suppressedByError = false
-                hide("finger lifted")
-            }
-        }
-
-        // Real-time hardware/logcat fingerprint authentication mismatch callback
-        ShizukuBridge.onFingerprintError = {
-            suppressedByError = true
-            ui.post {
-                hide("fingerprint mismatch error")
-            }
-        }
-
-        // Real-time biometric verification session start/stop from system services
-        ShizukuBridge.onBiometricPromptStateChanged = { active ->
-            isBiometricPromptActive = active
-            if (!active && !isLockOrAodState() && isShowingAnim) {
-                ui.post { hide("biometric prompt dismissed") }
-            }
+            }, durationMs)
         }
     }
-
-    @Volatile private var isInOurOwnApp = false
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val ev = event ?: return
         val pkgName = ev.packageName?.toString() ?: ""
+        val clsName = ev.className?.toString() ?: ""
+        val eventType = ev.eventType
 
-        if (ev.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && pkgName.isNotEmpty()) {
-            // Track whether the user is currently inside our own app UI so touching controls in our app doesn't pop the overlay
-            if (!pkgName.contains("systemui", ignoreCase = true) && !pkgName.contains("android", ignoreCase = true)) {
-                isInOurOwnApp = (pkgName == packageName)
+        val onLock = isLockOrAodState()
+        val isBioPkg = BiometricSignatures.isBiometricPackage(pkgName)
+
+        // Query the event's shallow source node for viewIdResourceName and text when it's a SystemUI/biometric package
+        var sourceViewId: String? = null
+        val sb = StringBuilder()
+        for (t in ev.text) {
+            if (!t.isNullOrEmpty()) {
+                if (sb.isNotEmpty()) sb.append(" | ")
+                sb.append(t)
             }
         }
+        if (!ev.contentDescription.isNullOrEmpty()) {
+            if (sb.isNotEmpty()) sb.append(" | ")
+            sb.append(ev.contentDescription)
+        }
 
-        if (pkgName == packageName) return
+        if (isBioPkg && (eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
+                eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
+        ) {
+            try {
+                val src = ev.source
+                if (src != null) {
+                    sourceViewId = src.viewIdResourceName
+                    if (!src.text.isNullOrEmpty()) {
+                        if (sb.isNotEmpty()) sb.append(" | ")
+                        sb.append(src.text)
+                    }
+                    if (!src.contentDescription.isNullOrEmpty()) {
+                        if (sb.isNotEmpty()) sb.append(" | ")
+                        sb.append(src.contentDescription)
+                    }
+                    // Also check up to 6 immediate children (O(1) bounded, no deep recursion)
+                    val count = src.childCount.coerceAtMost(6)
+                    for (i in 0 until count) {
+                        val child = src.getChild(i) ?: continue
+                        try {
+                            if (sourceViewId == null && !child.viewIdResourceName.isNullOrEmpty()) {
+                                sourceViewId = child.viewIdResourceName
+                            }
+                            if (!child.text.isNullOrEmpty()) {
+                                if (sb.isNotEmpty()) sb.append(" | ")
+                                sb.append(child.text)
+                            }
+                        } finally {
+                            @Suppress("DEPRECATION")
+                            child.recycle()
+                        }
+                    }
+                    @Suppress("DEPRECATION")
+                    src.recycle()
+                }
+            } catch (_: Throwable) {}
+        }
 
-        // 1. Fast zero-IPC text check for biometric error / mismatch messages
-        val textList = ev.text
-        val eventText = buildString {
-            textList?.forEach { append(it).append(" ") }
-            ev.contentDescription?.let { append(it) }
-        }.lowercase()
+        val combinedText = sb.toString()
 
-        if (isMismatchErrorString(eventText)) {
-            suppressedByError = true
-            hide("fingerprint mismatch error")
+        // Log SystemUI / biometric events in DEBUG Diagnostic Mode
+        if (DiagnosticLogger.enabled && (isBioPkg || eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
+                eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED)
+        ) {
+            val typeLabel = when (eventType) {
+                AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> "WIN_STATE"
+                AccessibilityEvent.TYPE_WINDOWS_CHANGED -> "WINDOWS_CHG"
+                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> "WIN_CONTENT"
+                AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED -> "NOTIF"
+                AccessibilityEvent.TYPE_ANNOUNCEMENT -> "ANNOUNCE"
+                else -> "EV_$eventType"
+            }
+            DiagnosticLogger.log(
+                "A11Y",
+                "type=$typeLabel pkg=$pkgName cls=$clsName winId=${ev.windowId} viewId=${sourceViewId ?: "-"} " +
+                    "text=\"${combinedText.take(120)}\" keyguard=${km.isKeyguardLocked} interactive=${pm.isInteractive}",
+                gate
+            )
+        }
+
+        // 1. Check for lockout / PIN-only / after-reboot restriction texts from SystemUI or Settings
+        if (isBioPkg && combinedText.isNotEmpty() && BiometricSignatures.matchesLockoutOrPinOnlyText(combinedText)) {
+            gate.updateEnvironment(
+                isLockOrAod = onLock,
+                canAcceptLockScreenFp = false,
+                isUnlockedPromptActive = false,
+                isLockScreenPinOnly = true
+            )
+            gate.latchTerminal("lockout_or_pin_only")
+            DiagnosticLogger.log(
+                "GATE_LOCKOUT",
+                "Detected lockout / PIN-only state from text=\"$combinedText\"",
+                gate
+            )
+            syncOverlayWithGate(reason = "lockout_or_pin_only")
             return
         }
 
-        // 2. Detect unlocked transition when keyguard is dismissed
-        if (shownOnLockscreen && !isLockOrAodState()) {
-            hide("device unlocked")
+        // 2. Check for fingerprint mismatch / "not recognized" / "try again" error texts
+        if (isBioPkg && combinedText.isNotEmpty() && BiometricSignatures.matchesMismatchText(combinedText)) {
+            gate.latchTerminal("mismatch_error")
+            DiagnosticLogger.log(
+                "GATE_MISMATCH",
+                "Detected fingerprint mismatch error from text=\"$combinedText\" -> latchTerminal",
+                gate
+            )
+            syncOverlayWithGate(reason = "a11y_mismatch_error")
             return
         }
 
-        // 3. Detect biometric verification dialog / prompt when unlocked (zero IPC overhead)
-        val className = ev.className?.toString() ?: ""
-        val isDirectBiometricUi = className.contains("BiometricPrompt", ignoreCase = true) ||
-                className.contains("AuthContainer", ignoreCase = true) ||
-                className.contains("FingerprintDialog", ignoreCase = true) ||
-                className.contains("ConfirmDeviceCredential", ignoreCase = true) ||
-                className.contains("BiometricActivity", ignoreCase = true) ||
-                className.contains("AppLock", ignoreCase = true) ||
-                eventText.contains("touch the fingerprint sensor") ||
-                eventText.contains("scan your fingerprint") ||
-                eventText.contains("place your finger") ||
-                eventText.contains("verify your identity") ||
-                eventText.contains("confirm with fingerprint")
+        // 3. Check for prompt dismissal / cancel text
+        if (isBioPkg && combinedText.isNotEmpty() && BiometricSignatures.matchesPromptDismissText(combinedText)) {
+            activeBiometricPromptWindowId = -1
+            gate.latchTerminal("prompt_dismissed")
+            DiagnosticLogger.log(
+                "GATE_DISMISS",
+                "Detected biometric prompt cancel/dismiss text=\"$combinedText\"",
+                gate
+            )
+            syncOverlayWithGate(reason = "a11y_prompt_dismiss")
+            return
+        }
 
-        if (isDirectBiometricUi) {
-            isBiometricPromptActive = true
-        } else if (ev.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && !isLockOrAodState()) {
-            isBiometricPromptActive = false
+        // 4. Detect BiometricPrompt / UDFPS overlay appearing
+        val matchedByClass = isBioPkg && BiometricSignatures.matchesPromptClass(clsName)
+        val matchedByViewId = isBioPkg && BiometricSignatures.matchesPromptViewId(sourceViewId)
+        val matchedByText = isBioPkg && combinedText.isNotEmpty() && BiometricSignatures.matchesPromptText(combinedText)
+
+        if (matchedByClass || matchedByViewId || matchedByText) {
+            mainHandler.removeCallbacks(clearUnlockedPromptRunnable)
+            if (!onLock && ev.windowId > 0) {
+                activeBiometricPromptWindowId = ev.windowId
+            }
+            if (onLock && matchedByText) {
+                gate.clearLockScreenRestriction()
+            }
+            // Only set isUnlockedPromptActive = true when the phone is unlocked (!onLock)
+            val unlockedPrompt = !onLock
+            gate.updateEnvironment(
+                isLockOrAod = onLock,
+                canAcceptLockScreenFp = canAcceptLockScreenFingerprint(),
+                isUnlockedPromptActive = unlockedPrompt
+            )
+            DiagnosticLogger.log(
+                "GATE_PROMPT_ON",
+                "Biometric request active (byClass=$matchedByClass, byViewId=$matchedByViewId, byText=$matchedByText, onLock=$onLock, winId=${ev.windowId})",
+                gate
+            )
+            syncOverlayWithGate(reason = "a11y_prompt_detected")
+            if (unlockedPrompt) {
+                mainHandler.postDelayed(clearUnlockedPromptRunnable, 20_000L)
+            }
+            return
+        }
+
+        // 5. Detect when an unlocked-screen BiometricPrompt disappears / closes:
+        //    (a) TYPE_WINDOWS_CHANGED when the tracked activeBiometricPromptWindowId is no longer in `windows`, OR
+        //    (b) TYPE_WINDOW_STATE_CHANGED moving focus to a non-biometric app window while unlocked.
+        if (!onLock && gate.unlockedPromptRequestActive) {
+            if (eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED && activeBiometricPromptWindowId > 0) {
+                try {
+                    val currentWinIds = windows?.map { it.id } ?: emptyList()
+                    if (currentWinIds.isNotEmpty() && activeBiometricPromptWindowId !in currentWinIds) {
+                        activeBiometricPromptWindowId = -1
+                        mainHandler.removeCallbacks(clearUnlockedPromptRunnable)
+                        gate.latchTerminal("prompt_dismissed")
+                        DiagnosticLogger.log(
+                            "GATE_PROMPT_OFF",
+                            "Biometric window closed (TYPE_WINDOWS_CHANGED, current=$currentWinIds)",
+                            gate
+                        )
+                        syncOverlayWithGate(reason = "biometric_window_removed")
+                        return
+                    }
+                } catch (_: Throwable) {}
+            } else if (eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
+                pkgName.isNotEmpty() &&
+                pkgName != packageName &&
+                !isBioPkg
+            ) {
+                // Foreground transitioned to a normal app / launcher window (prompt finished or dismissed)
+                activeBiometricPromptWindowId = -1
+                mainHandler.removeCallbacks(clearUnlockedPromptRunnable)
+                gate.latchTerminal("prompt_dismissed")
+                DiagnosticLogger.log(
+                    "GATE_PROMPT_OFF",
+                    "Foreground switched to non-biometric window ($pkgName / $clsName) -> prompt ended",
+                    gate
+                )
+                syncOverlayWithGate(reason = "foreground_app_switched")
+                return
+            }
+        }
+
+        // 6. Keep lock-screen environment state synchronized on window state changes
+        if (eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            val prevLock = gate.onLockOrAod
+            if (prevLock != onLock) {
+                gate.updateEnvironment(
+                    isLockOrAod = onLock,
+                    canAcceptLockScreenFp = canAcceptLockScreenFingerprint(),
+                    isUnlockedPromptActive = if (onLock) false else gate.unlockedPromptRequestActive
+                )
+                DiagnosticLogger.log("ENV_SYNC", "Lock state changed: prev=$prevLock -> now=$onLock", gate)
+                syncOverlayWithGate(reason = "lock_state_changed")
+            }
         }
     }
 
-    private fun isMismatchErrorString(s: String): Boolean {
-        if (s.isEmpty()) return false
-        return s.contains("not recognized") ||
-                s.contains("try again") ||
-                s.contains("didn't recognize") ||
-                s.contains("couldn't recognize") ||
-                s.contains("not match") ||
-                s.contains("doesn't match") ||
-                s.contains("does not match") ||
-                s.contains("mismatch") ||
-                s.contains("partial fingerprint") ||
-                s.contains("fingerprint error") ||
-                s.contains("sensor is dirty") ||
-                s.contains("clean the sensor") ||
-                s.contains("wrong fingerprint") ||
-                s.contains("finger moved") ||
-                s.contains("too fast") ||
-                s.contains("authentication failed") ||
-                s.contains("verification failed") ||
-                s.contains("unrecognized")
-    }
-
-    /**
-     * Ultra-fast `<1ms` path: posts at the very front of the main thread queue and
-     * immediately makes the pre-attached hardware-accelerated overlay visible.
-     * Works identically on both Lock Screen/AOD and Unlocked Screen!
-     */
-    fun showImmediate(onLock: Boolean = isLockOrAodState()) {
-        val runnable = Runnable {
-            ui.removeCallbacks(fingerUpHideTask)
-            ui.removeCallbacks(safetyMaxDurationHideTask)
-
-            if (!attached || overlayView == null) {
-                rebuildOverlayWindow(forceReloadAnim = true)
-            }
-
-            val v = overlayView ?: return@Runnable
-            shownOnLockscreen = onLock
-            shownAtUptimeMs = SystemClock.uptimeMillis()
-
-            if (!isShowingAnim || v.visibility != View.VISIBLE || v.alpha < 0.99f) {
-                isShowingAnim = true
-                lastTriggerSource = if (onLock) "Lockscreen / AOD sensor touch" else "Unlocked screen sensor touch"
-                v.visibility = View.VISIBLE
-                v.alpha = 1f
-                v.playImmediate()
-                bgHandler?.removeCallbacks(bgActiveMonitor)
-                bgHandler?.postDelayed(bgActiveMonitor, 100L)
-            }
-
-            ui.postDelayed(safetyMaxDurationHideTask, 10_000L)
+    private fun ensurePersistentOverlayAttached() {
+        if (isOverlayAttached && overlayContainer != null && animHostView != null) {
+            return
         }
 
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            runnable.run()
-        } else {
-            ui.postAtFrontOfQueue(runnable)
+        val calib = Prefs.load(this)
+        val bounds = Prefs.getRealDisplayBounds(this)
+        val w = bounds.width().coerceAtLeast(1080)
+        val h = bounds.height().coerceAtLeast(2400)
+        val sizePx = (calib.size * w).roundToInt().coerceAtLeast(120)
+
+        val container = FrameLayout(this).apply {
+            setBackgroundColor(Color.TRANSPARENT)
+            clipChildren = false
+            clipToPadding = false
+            visibility = View.INVISIBLE
+            alpha = 0f
+            setLayerType(View.LAYER_TYPE_HARDWARE, null)
+        }
+
+        val hostView = OverlayAnimHostView(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                Gravity.CENTER
+            )
+        }
+
+        hostView.bindActiveAnimation(this, calib.speed, sizePx, autoPlay = false)
+        container.addView(hostView)
+
+        val lp = buildOverlayLayoutParams(
+            widthPx = sizePx,
+            heightPx = sizePx,
+            xPx = (calib.cx * w - sizePx / 2f).roundToInt(),
+            yPx = (calib.cy * h - sizePx / 2f).roundToInt(),
+            activePlayback = false
+        )
+
+        try {
+            wm.addView(container, lp)
+            overlayContainer = container
+            animHostView = hostView
+            overlayLp = lp
+            isOverlayAttached = true
+        } catch (_: Throwable) {
+            isOverlayAttached = false
         }
     }
 
-    private fun hide(reason: String = "") {
-        val runnable = Runnable {
-            ui.removeCallbacks(fingerUpHideTask)
-            ui.removeCallbacks(safetyMaxDurationHideTask)
-            bgHandler?.removeCallbacks(bgActiveMonitor)
+    private fun syncPrewarmedOverlayPositionAndAsset() {
+        ensurePersistentOverlayAttached()
+        val container = overlayContainer ?: return
+        val hostView = animHostView ?: return
+        val lp = overlayLp ?: return
 
-            if (!isShowingAnim && overlayView?.visibility != View.VISIBLE) return@Runnable
-            isShowingAnim = false
-            shownOnLockscreen = false
-            if (reason.isNotEmpty()) {
-                lastTriggerSource = "Idle ($reason)"
+        val calib = Prefs.load(this)
+        val bounds = Prefs.getRealDisplayBounds(this)
+        val w = bounds.width().coerceAtLeast(1080)
+        val h = bounds.height().coerceAtLeast(2400)
+        val sizePx = (calib.size * w).roundToInt().coerceAtLeast(120)
+
+        lp.width = sizePx
+        lp.height = sizePx
+        lp.x = (calib.cx * w - sizePx / 2f).roundToInt()
+        lp.y = (calib.cy * h - sizePx / 2f).roundToInt()
+
+        hostView.bindActiveAnimation(this, calib.speed, sizePx, autoPlay = isShowing)
+
+        try {
+            wm.updateViewLayout(container, lp)
+        } catch (_: Throwable) {}
+    }
+
+    @Suppress("DEPRECATION")
+    private fun acquireAodWakeLockIfNeeded(onLock: Boolean) {
+        if (!onLock && pm.isInteractive) return
+        try {
+            if (activeWakeLock == null) {
+                activeWakeLock = pm.newWakeLock(
+                    PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
+                        PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                        PowerManager.ON_AFTER_RELEASE,
+                    "FPAnimator:AODOverlayWakeLock"
+                ).apply {
+                    setReferenceCounted(false)
+                }
             }
-            overlayView?.let { v ->
-                v.alpha = 0f
-                v.visibility = View.INVISIBLE
-                v.pauseAndResetToFrameZero()
-                v.primeForImmediateStart()
+            if (activeWakeLock?.isHeld != true) {
+                activeWakeLock?.acquire(BiometricSignatures.MAX_OVERLAY_DURATION_MS)
+            }
+        } catch (_: Throwable) {}
+    }
+
+    private fun releaseAodWakeLock() {
+        try {
+            if (activeWakeLock?.isHeld == true) {
+                activeWakeLock?.release()
+            }
+        } catch (_: Throwable) {}
+    }
+
+    private fun showImmediate(onLock: Boolean = isLockOrAodState(), reason: String = "") {
+        ensurePersistentOverlayAttached()
+        val view = overlayContainer ?: return
+        val anim = animHostView ?: return
+        val lp = overlayLp ?: return
+
+        acquireAodWakeLockIfNeeded(onLock)
+
+        if (!isShowing) {
+            isShowing = true
+            val calib = Prefs.load(this)
+            val bounds = Prefs.getRealDisplayBounds(this)
+            val w = bounds.width().coerceAtLeast(1080)
+            val h = bounds.height().coerceAtLeast(2400)
+            val sizePx = (calib.size * w).roundToInt().coerceAtLeast(120)
+
+            val newFlags = buildOverlayFlags(activePlayback = true)
+            val geomChanged = lp.width != sizePx ||
+                lp.height != sizePx ||
+                lp.x != (calib.cx * w - sizePx / 2f).roundToInt() ||
+                lp.y != (calib.cy * h - sizePx / 2f).roundToInt() ||
+                lp.flags != newFlags
+
+            if (geomChanged) {
+                lp.width = sizePx
+                lp.height = sizePx
+                lp.x = (calib.cx * w - sizePx / 2f).roundToInt()
+                lp.y = (calib.cy * h - sizePx / 2f).roundToInt()
+                lp.flags = newFlags
+                try {
+                    wm.updateViewLayout(view, lp)
+                } catch (_: Throwable) {}
+            }
+
+            anim.setSpeed(calib.speed)
+            anim.playImmediate()
+            view.alpha = 1f
+            view.visibility = View.VISIBLE
+
+            // Arm the hard 3-second maximum duration fail-safe timer
+            mainHandler.removeCallbacks(hardMaxDurationFailSafe)
+            mainHandler.postDelayed(hardMaxDurationFailSafe, BiometricSignatures.MAX_OVERLAY_DURATION_MS)
+
+            DiagnosticLogger.log("OVERLAY", "SHOW overlay (reason=$reason, onLock=$onLock)", gate)
+        }
+    }
+
+    private fun hideImmediate(reason: String = "") {
+        mainHandler.removeCallbacks(hardMaxDurationFailSafe)
+        if (!isShowing && overlayContainer?.visibility != View.VISIBLE) {
+            releaseAodWakeLock()
+            return
+        }
+        isShowing = false
+        val view = overlayContainer ?: return
+        val anim = animHostView ?: return
+        val lp = overlayLp
+
+        anim.pauseAndResetToFrameZero()
+        view.alpha = 0f
+        view.visibility = View.INVISIBLE
+
+        if (lp != null) {
+            val idleFlags = buildOverlayFlags(activePlayback = false)
+            if (lp.flags != idleFlags) {
+                lp.flags = idleFlags
+                try {
+                    wm.updateViewLayout(view, lp)
+                } catch (_: Throwable) {}
             }
         }
-
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            runnable.run()
-        } else {
-            ui.postAtFrontOfQueue(runnable)
-        }
+        releaseAodWakeLock()
+        DiagnosticLogger.log("OVERLAY", "HIDE overlay (reason=$reason)", gate)
     }
 
     override fun onInterrupt() {
-        hide("interrupted")
+        gate.resetAll("service_interrupt")
+        hideImmediate(reason = "onInterrupt")
     }
 
     override fun onDestroy() {
-        isRunning = false
         instance = null
-        fingerDownOnSensor = false
-        ui.removeCallbacksAndMessages(null)
-        bgHandler?.removeCallbacksAndMessages(null)
+        mainHandler.removeCallbacks(hardMaxDurationFailSafe)
+        mainHandler.removeCallbacks(clearUnlockedPromptRunnable)
+        gate.resetAll("service_destroy")
         try {
-            bgThread?.quitSafely()
+            prefs.unregisterOnSharedPreferenceChangeListener(prefsListener)
         } catch (_: Throwable) {}
-        bgThread = null
-        bgHandler = null
-
-        if (lockStateReceiverRegistered) {
-            try {
-                unregisterReceiver(lockStateReceiver)
-            } catch (_: Throwable) {}
-            lockStateReceiverRegistered = false
-        }
-
         try {
-            if (attached && overlayView != null) {
-                wm.removeViewImmediate(overlayView)
-            }
+            unregisterReceiver(screenReceiver)
         } catch (_: Throwable) {}
-        overlayView = null
-        attached = false
         ShizukuBridge.onTouch = null
+        ShizukuBridge.onFingerprintError = null
+        ShizukuBridge.onBiometricPromptStateChanged = null
+        releaseAodWakeLock()
+        overlayContainer?.let {
+            try {
+                wm.removeViewImmediate(it)
+            } catch (_: Throwable) {}
+        }
+        overlayContainer = null
+        animHostView = null
+        overlayLp = null
+        isOverlayAttached = false
         super.onDestroy()
     }
 }

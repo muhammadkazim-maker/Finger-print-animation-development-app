@@ -105,4 +105,15 @@ object Prefs {
             .putString("selected_video_asset", resolved)
             .apply()
     }
+
+    fun isDebugDiagEnabled(c: Context): Boolean {
+        val enabled = sp(c).getBoolean("debug_diag_enabled", false)
+        DiagnosticLogger.enabled = enabled
+        return enabled
+    }
+
+    fun setDebugDiagEnabled(c: Context, enabled: Boolean) {
+        DiagnosticLogger.enabled = enabled
+        sp(c).edit().putBoolean("debug_diag_enabled", enabled).apply()
+    }
 }

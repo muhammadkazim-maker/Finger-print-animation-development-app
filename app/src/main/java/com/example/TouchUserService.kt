@@ -130,9 +130,12 @@ class TouchUserService : ITouchService.Stub() {
     private fun monitorFingerprintErrors() {
         val cmd = arrayOf(
             "logcat", "-T", "1", "-v", "brief",
-            "FingerprintService:V", "BiometricService:V", "KeyguardUpdateMonitor:V",
-            "AuthController:V", "UdfpsController:V", "FingerprintHal:V",
-            "BiometricPrompt:V", "FingerprintManager:V", "*:S"
+            "FingerprintService:V", "Fingerprint21:V", "FingerprintProvider:V",
+            "BiometricService:V", "BiometricScheduler:V", "AuthenticationClient:V",
+            "AcquisitionClient:V", "KeyguardUpdateMonitor:V", "KeyguardBiometricLockoutLogger:V",
+            "AuthController:V", "UdfpsController:V", "UdfpsControllerOverlay:V",
+            "FodController:V", "FingerprintHal:V", "BiometricPrompt:V",
+            "FingerprintManager:V", "*:S"
         )
         val process = try {
             ProcessBuilder(*cmd).redirectErrorStream(true).start().also { logcatProc = it }
@@ -145,14 +148,22 @@ class TouchUserService : ITouchService.Stub() {
                 val line = reader.readLine() ?: break
                 val lower = line.lowercase()
 
-                // 1. Detect genuine mismatch / recognition failure events
+                // 1. Detect genuine mismatch / recognition failure / bad acquisition events
                 if (lower.contains("onauthenticationfailed") ||
                     lower.contains("onauthenticated(false)") ||
                     lower.contains("authenticated=false") ||
+                    lower.contains("authenticated: false") ||
                     lower.contains("authenticated(false)") ||
                     lower.contains("auth_failed") ||
                     lower.contains("handleauthenticated(false)") ||
                     lower.contains("onfingerprintauthenticated(false)") ||
+                    lower.contains("handlefingerprintauthfailed") ||
+                    lower.contains("onbiometricauthfailed") ||
+                    lower.contains("fingerprint_acquired_partial") ||
+                    lower.contains("fingerprint_acquired_insufficient") ||
+                    lower.contains("fingerprint_acquired_imager_dirty") ||
+                    lower.contains("fingerprint_acquired_too_fast") ||
+                    lower.contains("fingerprint_acquired_too_slow") ||
                     lower.contains("not recognized") ||
                     lower.contains("mismatch") ||
                     lower.contains("not match") ||
@@ -163,15 +174,21 @@ class TouchUserService : ITouchService.Stub() {
                     } catch (_: Exception) {}
                 }
 
-                // 2. Detect when an app on the unlocked phone starts or ends biometric verification
-                if (lower.contains("startauthentication") ||
-                    lower.contains("showauthenticationdialog") ||
-                    lower.contains("showdialog") ||
-                    lower.contains("showudfps") ||
-                    lower.contains("onauthenticationstarted") ||
-                    lower.contains("prepareforauthentication") ||
-                    lower.contains("starting authentication") ||
-                    lower.contains("authenticate(")
+                // 2. Detect when an app on the UNLOCKED phone starts or ends biometric verification.
+                // Ignore KeyguardUpdateMonitor start events because those belong to the lock screen, not unlocked BiometricPrompt.
+                val isKeyguardLine = lower.contains("keyguardupdatemonitor") ||
+                    lower.contains("owner=com.android.systemui") ||
+                    lower.contains("keyguard")
+
+                if (!isKeyguardLine && (
+                        lower.contains("showauthenticationdialog") ||
+                        lower.contains("showdialog") ||
+                        lower.contains("authcontainerview") ||
+                        lower.contains("startauthentication") ||
+                        lower.contains("prepareforauthentication") ||
+                        lower.contains("starting authentication") ||
+                        lower.contains("showudfpsoverlay")
+                    )
                 ) {
                     try {
                         listener?.onBiometricPromptStateChanged(true)
@@ -184,7 +201,9 @@ class TouchUserService : ITouchService.Stub() {
                     lower.contains("onauthenticationsucceeded") ||
                     lower.contains("onauthenticated(true)") ||
                     lower.contains("authenticated=true") ||
+                    lower.contains("authenticated: true") ||
                     lower.contains("ondismissed") ||
+                    lower.contains("finishing client") ||
                     lower.contains("client stopped")
                 ) {
                     try {

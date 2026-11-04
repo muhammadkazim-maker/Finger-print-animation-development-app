@@ -11,7 +11,7 @@ import rikka.shizuku.Shizuku
 
 object ShizukuBridge {
     private const val TAG = "FPAnim"
-    private const val SERVICE_VERSION = 10
+    private const val SERVICE_VERSION = 11
 
     @Volatile var service: ITouchService? = null
     @Volatile var onTouch: ((Boolean) -> Unit)? = null

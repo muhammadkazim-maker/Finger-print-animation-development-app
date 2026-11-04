@@ -249,5 +249,53 @@ class ExampleRobolectricTest {
                 (activeFlags and android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON) != 0
         )
     }
+
+    @Test
+    fun `BiometricGateState enforces visible equals fingerDown and requestActive and not latchedTerminal`() {
+        val gate = BiometricGateState()
+
+        // 1. Unlocked screen with no active biometric prompt: touching sensor must NOT show overlay
+        gate.updateEnvironment(isLockOrAod = false, canAcceptLockScreenFp = false, isUnlockedPromptActive = false)
+        assertEquals(false, gate.onFingerDown())
+        assertEquals(false, gate.visible)
+        gate.onFingerUp()
+
+        // 2. Lock screen waiting for fingerprint: touching sensor shows overlay; mismatch latches terminal & hides
+        gate.updateEnvironment(isLockOrAod = true, canAcceptLockScreenFp = true, isUnlockedPromptActive = false)
+        assertEquals(true, gate.onFingerDown())
+        assertEquals(true, gate.visible)
+
+        // Mismatch occurs while finger stays down -> hides immediately and stays hidden
+        assertEquals(false, gate.latchTerminal("mismatch_error"))
+        assertEquals(true, gate.latchedTerminal)
+        assertEquals(false, gate.visible)
+        // Finger still down -> must NOT reappear
+        assertEquals(false, gate.onFingerDown())
+
+        // Finger lifts -> clears latchedTerminal
+        assertEquals(false, gate.onFingerUp())
+        assertEquals(false, gate.latchedTerminal)
+
+        // Touching again while lock screen request is still active shows animation again
+        assertEquals(true, gate.onFingerDown())
+        assertEquals(true, gate.visible)
+        gate.onFingerUp()
+
+        // 3. Unlocked screen WITH BiometricPrompt active: shows on touch, hides on success/dismiss
+        gate.updateEnvironment(isLockOrAod = false, canAcceptLockScreenFp = false, isUnlockedPromptActive = true)
+        assertEquals(true, gate.onFingerDown())
+        assertEquals(false, gate.latchTerminal("unlock_success"))
+        assertEquals(false, gate.visible)
+        gate.onFingerUp()
+
+        // 4. Verify BiometricSignatures helpers
+        assertTrue(BiometricSignatures.isBiometricPackage("com.android.systemui"))
+        assertTrue(BiometricSignatures.isBiometricPackage("com.transsion.applock"))
+        assertTrue(BiometricSignatures.matchesPromptClass("com.android.systemui.biometrics.AuthContainerView"))
+        assertTrue(BiometricSignatures.matchesPromptViewId("com.android.systemui:id/biometric_icon"))
+        assertTrue(BiometricSignatures.matchesPromptText("Touch the fingerprint sensor"))
+        assertTrue(BiometricSignatures.matchesMismatchText("Fingerprint not recognized. Try again."))
+        assertTrue(BiometricSignatures.matchesLockoutOrPinOnlyText("Too many attempts. Try again in 30 seconds."))
+    }
 }
 

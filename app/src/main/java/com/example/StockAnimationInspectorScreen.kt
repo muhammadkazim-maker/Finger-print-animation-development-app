@@ -324,6 +324,83 @@ fun StockAnimationInspectorScreen(
             }
         }
 
+        // Hidden/Debug Diagnostic Mode (SystemUI & Gate Logger, off by default)
+        var diagEnabled by remember { mutableStateOf(Prefs.isDebugDiagEnabled(context)) }
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF141824)),
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(1.dp, if (diagEnabled) Color(0xFF00E676) else Color(0xFF26324B)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "DEBUG Diagnostic Mode (Off by default)",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = if (diagEnabled) Color(0xFF00E676) else Color.White,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Logs timestamped SystemUI accessibility events/windows, keyguard/screen state, and gate state (logcat tag: FPAnimDiag).",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFFB0BEC5)
+                        )
+                    }
+                    androidx.compose.material3.Switch(
+                        checked = diagEnabled,
+                        onCheckedChange = { enabled ->
+                            diagEnabled = enabled
+                            Prefs.setDebugDiagEnabled(context, enabled)
+                            statusMessage = if (enabled) {
+                                "DEBUG Diagnostic Mode ON — run the 4 fingerprint tests now, then tap Load & Copy Diag Logs."
+                            } else {
+                                "DEBUG Diagnostic Mode OFF"
+                            }
+                        },
+                        modifier = Modifier.testTag("debug_diag_switch")
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            val dump = DiagnosticLogger.dumpText()
+                            outputText = dump
+                            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                            cm?.setPrimaryClip(ClipData.newPlainText("FPAnimDiag Logs", dump))
+                            statusMessage = "Loaded & copied FPAnimDiag logs to clipboard!"
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("copy_diag_logs_button")
+                    ) {
+                        Text("Load & Copy Diag Logs")
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            DiagnosticLogger.clear()
+                            outputText = "Diagnostic log buffer cleared."
+                            statusMessage = "Cleared FPAnimDiag log buffer."
+                        },
+                        modifier = Modifier.testTag("clear_diag_logs_button")
+                    ) {
+                        Text("Clear")
+                    }
+                }
+            }
+        }
+
         if (isRunning) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
