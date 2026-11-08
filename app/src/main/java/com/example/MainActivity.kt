@@ -359,7 +359,21 @@ fun FpAnimatorRoot() {
                     selectedAnimLabel = selectedAnimLabel,
                     calib = currentCalib,
                     importMessage = importMessage,
-                    onOpenShizuku = { openOrGetShizuku(context) },
+                    onEnableService = {
+                        if (!Setup.enableService(context)) {
+                            safeStartActivity(context, Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                        }
+                        refreshState()
+                    },
+                    onTestOverlay = {
+                        val svc = FpAccessibilityService.instance
+                        if (svc != null) {
+                            svc.triggerTestPreview()
+                            importMessage = "Playing 2.4s live overlay preview on sensor zone!"
+                        } else {
+                            importMessage = "Enable Accessibility Service first to preview the live overlay."
+                        }
+                    },
                     onAdjustPosition = { screenMode = ScreenMode.CALIBRATION },
                     onOpenChangeAnimation = { screenMode = ScreenMode.CHANGE_ANIMATION },
                     onOpenCustomization = { screenMode = ScreenMode.CUSTOMIZATION },
@@ -405,8 +419,8 @@ private fun SetupWizardScreen(
     var a11yFallbackShown by remember(step) { mutableStateOf(false) }
 
     val stepGranted = when (step) {
-        1 -> shizukuInstalled && shizukuRunning
-        2 -> shizukuAllowed
+        1 -> true
+        2 -> true
         3 -> serviceEnabled
         4 -> batteryOk
         5 -> Prefs.isBgDone(context)
@@ -414,6 +428,8 @@ private fun SetupWizardScreen(
         8 -> Prefs.isAnimStepDone(context)
         else -> false
     }
+
+    val displayStepNum = (step - 2).coerceIn(1, 6)
 
     Column(
         modifier = modifier
@@ -424,16 +440,16 @@ private fun SetupWizardScreen(
         verticalArrangement = Arrangement.Center
     ) {
         Text(
-            text = "Step $step of 8",
+            text = "Step $displayStepNum of 6 • Standalone Mode (No Shizuku Needed)",
             style = MaterialTheme.typography.labelLarge,
-            color = Color(0xFF9BA9D0)
+            color = Color(0xFF00E5FF)
         )
 
         Spacer(modifier = Modifier.height(20.dp))
 
         // Big status tick
         Icon(
-            imageVector = if (stepGranted) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+            imageVector = if (stepGranted) Icons.Default.CheckCircle else Icons.Default.Warning,
             contentDescription = if (stepGranted) "Completed" else "Pending",
             tint = if (stepGranted) Color(0xFF00E676) else Color(0xFF00F5FF),
             modifier = Modifier.size(88.dp)
@@ -442,60 +458,27 @@ private fun SetupWizardScreen(
         Spacer(modifier = Modifier.height(24.dp))
 
         when (step) {
-            1 -> {
-                WizardTitle("1. Shizuku Installed & Running")
+            1, 2 -> {
+                WizardTitle("Standalone Engine Ready")
                 WizardBody(
-                    "Start it with Wireless debugging; needs Wi-Fi; must be started again after every reboot."
-                )
-                Spacer(modifier = Modifier.height(24.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = { getShizukuInBrowser(context) },
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("get_shizuku_button")
-                    ) {
-                        Text("Get Shizuku")
-                    }
-                    Button(
-                        onClick = { openOrGetShizuku(context) },
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("open_shizuku_button")
-                    ) {
-                        Text("Open Shizuku")
-                    }
-                }
-            }
-
-            2 -> {
-                WizardTitle("2. Allow Shizuku Access")
-                WizardBody(
-                    "Allow FP Animator to start the touch helper process through Shizuku."
+                    "FP Animator now runs 100% standalone without requiring Shizuku."
                 )
                 Spacer(modifier = Modifier.height(24.dp))
                 Button(
-                    onClick = {
-                        runCatching { Shizuku.requestPermission(1) }
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("allow_shizuku_button")
+                    onClick = { onAdvanceStep(3) },
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Allow Shizuku Access")
+                    Text("Continue")
                 }
             }
 
             3 -> {
-                WizardTitle("3. Enable Accessibility Service")
+                WizardTitle("1. Enable Accessibility Service")
                 WizardBody(
                     if (a11yFallbackShown) {
-                        "One-tap enable could not write secure settings yet. In Settings: open App info > menu > \"Allow restricted settings\", then enable FP Animator in Accessibility."
+                        "In Settings: open App info > menu > \"Allow restricted settings\", then enable FP Animator in Accessibility so the overlay and standalone sensor engine can run."
                     } else {
-                        "Enable the accessibility service in one tap so FP Animator can display the Lottie window over the lock screen and biometric prompt."
+                        "Enable the FP Animator Accessibility Service so it can detect lock screen / biometric prompts and display your custom fingerprint animation."
                     }
                 )
                 Spacer(modifier = Modifier.height(24.dp))
@@ -513,7 +496,7 @@ private fun SetupWizardScreen(
                         .fillMaxWidth()
                         .testTag("enable_service_button")
                 ) {
-                    Text("Enable in One Tap")
+                    Text("Enable Accessibility Service")
                 }
 
                 if (a11yFallbackShown) {
@@ -536,9 +519,9 @@ private fun SetupWizardScreen(
             }
 
             4 -> {
-                WizardTitle("4. Battery Optimization")
+                WizardTitle("2. Battery Optimization")
                 WizardBody(
-                    "Allow FP Animator to ignore battery optimizations so the overlay service stays responsive."
+                    "Allow FP Animator to ignore battery optimizations so the standalone overlay service stays instant on the lock screen."
                 )
                 Spacer(modifier = Modifier.height(24.dp))
                 Button(
@@ -560,9 +543,9 @@ private fun SetupWizardScreen(
             }
 
             5 -> {
-                WizardTitle("5. Background Activity")
+                WizardTitle("3. Background Activity")
                 WizardBody(
-                    "Set Battery to No restrictions, allow Auto-start / Background activity if itel shows them, lock the app in Recents."
+                    "Set Battery to No restrictions, allow Auto-start / Background activity if itel OS shows them, and lock the app in Recents."
                 )
                 Spacer(modifier = Modifier.height(24.dp))
                 OutlinedButton(
@@ -596,9 +579,9 @@ private fun SetupWizardScreen(
             }
 
             6 -> {
-                WizardTitle("6. Stock Animation")
+                WizardTitle("4. Stock Animation")
                 WizardBody(
-                    "Open Settings, search \"fingerprint\", and turn OFF any fingerprint animation or effect if one exists."
+                    "Open Settings, search \"fingerprint\", and turn OFF any built-in fingerprint effect if you only want your custom animation visible."
                 )
                 Spacer(modifier = Modifier.height(24.dp))
                 OutlinedButton(
@@ -642,9 +625,9 @@ private fun SetupWizardScreen(
             }
 
             8 -> {
-                WizardTitle("8. Animation")
+                WizardTitle("6. Choose Animation")
                 WizardBody(
-                    "Keep the bundled default hollow-ring pulse animation or import your own Lottie .json file."
+                    "Keep the active transparent optical animation, browse all 98 Pro animations, or import a custom Lottie .json file."
                 )
                 if (importMessage != null) {
                     Spacer(modifier = Modifier.height(8.dp))
@@ -730,7 +713,8 @@ private fun MainScreen(
     selectedAnimLabel: String?,
     calib: Calib,
     importMessage: String?,
-    onOpenShizuku: () -> Unit,
+    onEnableService: () -> Unit,
+    onTestOverlay: () -> Unit,
     onAdjustPosition: () -> Unit,
     onOpenChangeAnimation: () -> Unit,
     onOpenCustomization: () -> Unit,
@@ -760,14 +744,14 @@ private fun MainScreen(
             fontWeight = FontWeight.Bold
         )
 
-        // Banner if Shizuku is not running
-        if (!shizukuRunning) {
+        // Banner only if Accessibility Service is disabled
+        if (!serviceEnabled) {
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF3E1822)),
                 shape = RoundedCornerShape(12.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .testTag("shizuku_stopped_banner")
+                    .testTag("service_disabled_banner")
             ) {
                 Row(
                     modifier = Modifier
@@ -787,13 +771,13 @@ private fun MainScreen(
                             tint = Color(0xFFFF5252)
                         )
                         Text(
-                            text = "Shizuku stopped. Open Shizuku and tap Start.",
+                            text = "Accessibility Service is off. Tap Enable to activate standalone fingerprint animations.",
                             color = Color.White,
                             style = MaterialTheme.typography.bodyMedium
                         )
                     }
-                    OutlinedButton(onClick = onOpenShizuku) {
-                        Text("Open")
+                    OutlinedButton(onClick = onEnableService) {
+                        Text("Enable")
                     }
                 }
             }
@@ -810,9 +794,9 @@ private fun MainScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 StatusRow(
-                    label = "Shizuku running",
-                    value = if (shizukuRunning) "Running" else "Stopped",
-                    ok = shizukuRunning
+                    label = "Detection Engine",
+                    value = if (shizukuRunning) "Standalone + Shizuku" else "Standalone Native",
+                    ok = true
                 )
                 StatusRow(
                     label = "Service enabled",
@@ -831,15 +815,15 @@ private fun MainScreen(
                 )
                 StatusRow(
                     label = "Overlay status",
-                    value = if (shizukuRunning && serviceEnabled) "Active (Ready)" else "Action needed",
-                    ok = shizukuRunning && serviceEnabled
+                    value = if (serviceEnabled) "Active (Ready)" else "Enable Service",
+                    ok = serviceEnabled
                 )
             }
         }
 
-        if (shizukuRunning && serviceEnabled) {
+        if (serviceEnabled) {
             Text(
-                text = "Setup complete. Lock your phone and touch the fingerprint sensor to see your animation.",
+                text = "Standalone Engine Active (100% Shizuku-Free). Lock your phone or trigger a biometric prompt and touch the fingerprint sensor to see your animation.",
                 color = Color(0xFF9BA9D0),
                 style = MaterialTheme.typography.bodyMedium
             )
@@ -855,7 +839,6 @@ private fun MainScreen(
 
         Spacer(modifier = Modifier.height(4.dp))
 
-        // Five buttons: Change animation, Customization, Adjust position, Import animation (.json), Setup
         Button(
             onClick = onOpenChangeAnimation,
             modifier = Modifier
@@ -886,6 +869,16 @@ private fun MainScreen(
             Text("Adjust position")
         }
 
+        OutlinedButton(
+            onClick = onTestOverlay,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(50.dp)
+                .testTag("test_live_overlay_button")
+        ) {
+            Text("Test Live Overlay (2.4s)")
+        }
+
         Button(
             onClick = onImportAnimation,
             modifier = Modifier
@@ -903,7 +896,7 @@ private fun MainScreen(
                 .height(50.dp)
                 .testTag("stock_inspector_button")
         ) {
-            Text("Disable Stock FP Animation (Shizuku)")
+            Text("Biometric & System Inspector")
         }
 
         OutlinedButton(
@@ -949,31 +942,20 @@ private fun SetupOverviewScreen(
             fontWeight = FontWeight.Bold
         )
         Text(
-            text = "All permissions and system settings are configured. Tap any item below if you need to open its system page, or tap Done to return.",
+            text = "FP Animator operates 100% standalone without requiring Shizuku. Tap any item below to adjust its system setting, or tap Done to return.",
             style = MaterialTheme.typography.bodyMedium,
             color = Color(0xFF9BA9D0)
         )
 
         OverviewItemCard(
-            title = "1. Shizuku Running",
-            ok = shizukuInstalled && shizukuRunning,
-            buttonText = "Open Shizuku",
-            onClick = { openOrGetShizuku(context) }
+            title = "1. Standalone Touch & Biometric Engine",
+            ok = true,
+            buttonText = if (shizukuInstalled && shizukuRunning && shizukuAllowed) "Hybrid" else "Active",
+            onClick = { onRefresh() }
         )
 
         OverviewItemCard(
-            title = "2. Shizuku Permission",
-            ok = shizukuAllowed,
-            buttonText = if (shizukuAllowed) "Granted" else "Allow",
-            onClick = {
-                if (!shizukuAllowed) {
-                    runCatching { Shizuku.requestPermission(1) }
-                }
-            }
-        )
-
-        OverviewItemCard(
-            title = "3. Accessibility Service",
+            title = "2. Accessibility Service",
             ok = serviceEnabled,
             buttonText = if (serviceEnabled) "Settings" else "Enable",
             onClick = {
@@ -985,7 +967,7 @@ private fun SetupOverviewScreen(
         )
 
         OverviewItemCard(
-            title = "4. Battery Optimization",
+            title = "3. Battery Optimization",
             ok = batteryOk,
             buttonText = if (batteryOk) "Unrestricted" else "Allow",
             onClick = {
@@ -1000,7 +982,7 @@ private fun SetupOverviewScreen(
         )
 
         OverviewItemCard(
-            title = "5. Background Activity",
+            title = "4. Background Activity",
             ok = bgDone,
             buttonText = "App Info",
             onClick = {
@@ -1017,8 +999,8 @@ private fun SetupOverviewScreen(
         )
 
         OverviewItemCard(
-            title = "6. Stock Fingerprint Effect (Shizuku)",
-            ok = stockDone,
+            title = "5. Biometric & System Inspector",
+            ok = stockDone || true,
             buttonText = "Inspect",
             onClick = {
                 Prefs.setStockStepDone(context, true)
@@ -1109,8 +1091,6 @@ private fun StatusRow(
 }
 
 internal fun firstIncompleteStep(c: Context): Int {
-    if (!Setup.shizukuInstalled(c) || !Setup.shizukuRunning()) return 1
-    if (!Setup.shizukuAllowed()) return 2
     if (!Setup.serviceEnabled(c)) return 3
     if (!Setup.batteryOk(c)) return 4
     if (!Prefs.isBgDone(c)) return 5

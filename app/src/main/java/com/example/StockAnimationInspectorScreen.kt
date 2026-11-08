@@ -122,7 +122,7 @@ fun StockAnimationInspectorScreen(
         if (isRunning) return
         commandText = cmd
         isRunning = true
-        statusMessage = "Running $label via Shizuku..."
+        statusMessage = "Running $label..."
         scope.launch {
             val result = withContext(Dispatchers.IO) {
                 ShizukuBridge.runShellCommand(cmd)
@@ -177,6 +177,7 @@ fun StockAnimationInspectorScreen(
 
                 val allLines = mutableListOf<String>()
                 allLines += "=== SCENARIO RECORDING (15s, itel S25) ==="
+                allLines += "EngineMode: ${if (ShizukuBridge.isConnectedAndActive()) "Hybrid (Shizuku + Standalone)" else "Standalone Native (Shizuku-Free)"}"
                 allLines += "LastDecision: ${FpAccessibilityService.lastTriggerSource}"
                 allLines += "TrackerState: ${FpAccessibilityService.instance?.tracker ?: "service_not_connected"}"
                 allLines += ""
@@ -231,7 +232,7 @@ fun StockAnimationInspectorScreen(
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "Stock Animation Inspector (Shizuku)",
+                    text = "Biometric & System Inspector",
                     style = MaterialTheme.typography.titleLarge,
                     color = Color.White,
                     fontWeight = FontWeight.Bold

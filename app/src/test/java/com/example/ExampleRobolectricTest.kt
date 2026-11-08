@@ -295,5 +295,35 @@ class ExampleRobolectricTest {
         assertTrue(BiometricSignatures.matchesMismatchText("Fingerprint not recognized. Try again."))
         assertTrue(BiometricSignatures.matchesLockoutOrPinOnlyText("Too many attempts. Try again in 30 seconds."))
     }
+
+    @Test
+    @Suppress("DEPRECATION")
+    fun `Standalone Shizuku-free engine does not require Shizuku for wizard steps and toggles sentinel flags cleanly`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        // Without Shizuku installed or running, firstIncompleteStep starts at step 3 (Accessibility Service), not 1 or 2
+        val step = firstIncompleteStep(context)
+        assertTrue("Wizard must skip Shizuku steps 1 & 2 in standalone mode", step >= 3)
+
+        // Idle sentinel flags must include FLAG_NOT_TOUCHABLE (0% touch overhead during normal unlocked phone usage)
+        val idleSentinelFlags = FpAccessibilityService.buildSentinelFlags(watchOutsideTouch = false)
+        assertTrue(
+            "Idle sentinel must have FLAG_NOT_TOUCHABLE",
+            (idleSentinelFlags and android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) != 0
+        )
+
+        // Active biometric request sentinel flags must watch outside touch without blocking sensor touches
+        val activeSentinelFlags = FpAccessibilityService.buildSentinelFlags(watchOutsideTouch = true)
+        assertTrue(
+            "Active sentinel must have FLAG_NOT_TOUCH_MODAL and FLAG_WATCH_OUTSIDE_TOUCH",
+            (activeSentinelFlags and android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL) != 0 &&
+                (activeSentinelFlags and android.view.WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH) != 0
+        )
+        assertEquals(
+            "Active sentinel must not have FLAG_NOT_TOUCHABLE so outside touches are observed",
+            0,
+            activeSentinelFlags and android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        )
+    }
 }
+
 

@@ -39,6 +39,9 @@ class FpAccessibilityService : AccessibilityService() {
         @Volatile
         var lastTriggerSource: String = "Idle"
 
+        private const val STANDALONE_OPTICAL_RELEASE_MS = 1_500L
+        private const val MIN_HBM_WINDOW_HOLD_MS = 220L
+
         @Suppress("DEPRECATION")
         fun buildOverlayFlags(activePlayback: Boolean): Int {
             var flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
@@ -55,6 +58,22 @@ class FpAccessibilityService : AccessibilityService() {
                     WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
             }
             return flags
+        }
+
+        @Suppress("DEPRECATION")
+        fun buildSentinelFlags(watchOutsideTouch: Boolean): Int {
+            val base = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                WindowManager.LayoutParams.FLAG_ALLOW_LOCK_WHILE_SCREEN_ON
+            return if (watchOutsideTouch) {
+                base or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH
+            } else {
+                base or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            }
         }
 
         fun buildOverlayLayoutParams(
@@ -96,9 +115,19 @@ class FpAccessibilityService : AccessibilityService() {
     private var isShowing = false
     private var activeWakeLock: PowerManager.WakeLock? = null
 
-    // Pre-cached calibration speed so showImmediate() does zero SharedPreferences or WindowMetrics reads on touch-down
-    @Volatile
-    private var cachedSpeed: Float = 1.0f
+    // 1x1 Standalone zero-interference outside-touch sentinel window (active ONLY when requestActive == true)
+    private var touchSentinelView: View? = null
+    private var touchSentinelLp: WindowManager.LayoutParams? = null
+    private var isSentinelAttached = false
+    private var isSentinelWatchingTouch = false
+    private var standaloneTouchActive = false
+    private var lastWindowCountWhileShowing = -1
+
+    // Pre-cached calibration metrics so showImmediate() & zone checks do zero SharedPreferences/WindowMetrics reads
+    @Volatile private var cachedSpeed: Float = 1.0f
+    @Volatile private var cachedCxPx: Float = 540f
+    @Volatile private var cachedCyPx: Float = 1968f
+    @Volatile private var cachedSensorRadiusPx: Float = 68f
 
     /**
      * Sole owner of `isBiometricPromptActive`, `fingerDown`, and `latchedTerminal`.
@@ -125,9 +154,22 @@ class FpAccessibilityService : AccessibilityService() {
      */
     private val hardMaxDurationFailSafe = Runnable {
         if (isShowing || tracker.fingerDown) {
+            standaloneTouchActive = false
             tracker.onHardMaxDurationReached()
             recordDecision(tracker.lastDecisionReason)
             hideImmediate(reason = tracker.lastDecisionReason)
+            syncSentinelWatchState()
+        }
+    }
+
+    /**
+     * Standalone optical scan release timer:
+     * When running without Shizuku's raw `/dev/input` `BTN_TOUCH 0` signal, releases the touch state
+     * cleanly after an optical scan cycle if neither unlock nor mismatch text already ended it.
+     */
+    private val standaloneHoldReleaseRunnable = Runnable {
+        if (standaloneTouchActive && !ShizukuBridge.isConnectedAndActive()) {
+            onStandaloneSensorTouchUp("optical_scan_complete")
         }
     }
 
@@ -139,6 +181,7 @@ class FpAccessibilityService : AccessibilityService() {
             tracker.onPromptStopped("stale_watchdog_timeout")
             recordDecision("Hide: biometric prompt stale watchdog expired")
             syncOverlayWithTracker()
+            syncSentinelWatchState()
         }
     }
 
@@ -158,9 +201,12 @@ class FpAccessibilityService : AccessibilityService() {
             when (intent?.action) {
                 Intent.ACTION_USER_PRESENT -> {
                     mainHandler.removeCallbacks(stalePromptWatchdogRunnable)
+                    mainHandler.removeCallbacks(standaloneHoldReleaseRunnable)
+                    standaloneTouchActive = false
                     tracker.onDeviceUnlocked()
                     recordDecision(tracker.lastDecisionReason)
                     syncOverlayWithTracker()
+                    syncSentinelWatchState()
                     ShizukuBridge.setScreenInteractive(true)
                 }
                 Intent.ACTION_SCREEN_ON -> {
@@ -172,14 +218,19 @@ class FpAccessibilityService : AccessibilityService() {
                     )
                     syncOverlayWithTracker()
                     ensurePersistentOverlayAttached()
+                    ensureTouchSentinelAttached()
+                    syncSentinelWatchState()
                     ShizukuBridge.setScreenInteractive(true)
                     ShizukuBridge.tryBind()
                 }
                 Intent.ACTION_SCREEN_OFF -> {
                     mainHandler.removeCallbacks(stalePromptWatchdogRunnable)
+                    mainHandler.removeCallbacks(standaloneHoldReleaseRunnable)
+                    standaloneTouchActive = false
                     tracker.onScreenOffOrReset("screen off (ACTION_SCREEN_OFF)")
                     recordDecision(tracker.lastDecisionReason)
                     syncOverlayWithTracker()
+                    syncSentinelWatchState()
                     ShizukuBridge.setScreenInteractive(false)
                 }
             }
@@ -188,6 +239,51 @@ class FpAccessibilityService : AccessibilityService() {
 
     private fun isLockOrAodState(): Boolean {
         return km.isKeyguardLocked || !pm.isInteractive
+    }
+
+    private fun isPointInsideSensorZone(rawX: Float, rawY: Float): Boolean {
+        // Allow 1.30x tolerance around the calibrated inner sensor radius for natural thumb pad contact
+        val r = cachedSensorRadiusPx * 1.30f
+        val dx = rawX - cachedCxPx
+        val dy = rawY - cachedCyPx
+        return (dx * dx + dy * dy) <= (r * r)
+    }
+
+    private fun onStandaloneSensorTouchDown(source: String) {
+        val onLock = isLockOrAodState()
+        tracker.syncLockState(onLock)
+        if (!tracker.requestActive) {
+            syncSentinelWatchState()
+            return
+        }
+        // If a previous standalone touch cycle was still latched or active, reset it cleanly for this fresh press
+        if (standaloneTouchActive && tracker.latchedTerminal) {
+            tracker.onFingerUp()
+        }
+        standaloneTouchActive = true
+        val shouldShow = tracker.onFingerDown(onLock)
+        if (shouldShow) {
+            showImmediate(onLock = onLock, reason = "$source -> ${tracker.lastDecisionReason}")
+            lastWindowCountWhileShowing = runCatching { windows?.size ?: -1 }.getOrDefault(-1)
+            mainHandler.removeCallbacks(standaloneHoldReleaseRunnable)
+            mainHandler.postDelayed(standaloneHoldReleaseRunnable, STANDALONE_OPTICAL_RELEASE_MS)
+        } else {
+            hideImmediate(reason = tracker.lastDecisionReason)
+        }
+        recordDecision(tracker.lastDecisionReason)
+    }
+
+    private fun onStandaloneSensorTouchUp(reason: String) {
+        mainHandler.removeCallbacks(standaloneHoldReleaseRunnable)
+        standaloneTouchActive = false
+        lastWindowCountWhileShowing = -1
+        val wasShowing = isShowing
+        tracker.onFingerUp()
+        hideImmediate(reason = "Hide: $reason")
+        if (wasShowing) {
+            recordDecision("Hide: $reason")
+        }
+        syncSentinelWatchState()
     }
 
     private fun recordDecision(reason: String) {
@@ -233,9 +329,11 @@ class FpAccessibilityService : AccessibilityService() {
         ProVideoFrameCache.pinActiveOverlayAtlas(this, Prefs.getSelectedVideoAsset(this))
         LottiePrewarmCache.prewarmAsync(this)
         ensurePersistentOverlayAttached()
+        ensureTouchSentinelAttached()
 
         tracker.syncLockState(isLockOrAodState())
-        recordDecision("Service connected (keyguard=${km.isKeyguardLocked}, interactive=${pm.isInteractive})")
+        syncSentinelWatchState()
+        recordDecision("Standalone Service Ready (keyguard=${km.isKeyguardLocked}, interactive=${pm.isInteractive})")
 
         setupShizukuCallbacks()
         ShizukuBridge.init(this)
@@ -243,14 +341,16 @@ class FpAccessibilityService : AccessibilityService() {
     }
 
     private fun setupShizukuCallbacks() {
-        // 1. Raw kernel touch inside calibrated inner sensor circle — front-of-queue async dispatch (<0.2ms)
+        // Optional Shizuku hardware /dev/input acceleration (used automatically if Shizuku is running;
+        // when Shizuku is not installed/running, the built-in Standalone Engine handles everything).
         ShizukuBridge.onTouch = { down ->
             postImmediateMain {
+                mainHandler.removeCallbacks(standaloneHoldReleaseRunnable)
+                standaloneTouchActive = false
                 val onLock = isLockOrAodState()
                 if (down) {
                     val shouldShow = tracker.onFingerDown(onLock)
                     if (shouldShow) {
-                        // Show BEFORE logging so the GPU frame is scheduled with zero delay
                         showImmediate(onLock = onLock, reason = tracker.lastDecisionReason)
                     } else {
                         hideImmediate(reason = tracker.lastDecisionReason)
@@ -266,12 +366,13 @@ class FpAccessibilityService : AccessibilityService() {
                         DiagnosticLogger.log("TOUCH", "Finger lifted (overlay was already hidden)", tracker)
                     }
                 }
+                syncSentinelWatchState()
             }
         }
 
-        // 2. Real-time mismatch / error signal from TouchUserService logcat monitor
         ShizukuBridge.onFingerprintError = {
             postImmediateMain {
+                mainHandler.removeCallbacks(standaloneHoldReleaseRunnable)
                 val accepted = tracker.onMismatchError(source = "shizuku_logcat")
                 if (accepted) {
                     syncOverlayWithTracker()
@@ -280,7 +381,6 @@ class FpAccessibilityService : AccessibilityService() {
             }
         }
 
-        // 3. Real-time biometric prompt start/stop signal from TouchUserService logcat monitor
         ShizukuBridge.onBiometricPromptStateChanged = { active ->
             postImmediateMain {
                 val onLock = isLockOrAodState()
@@ -292,6 +392,7 @@ class FpAccessibilityService : AccessibilityService() {
                         isLockOrAodNow = onLock
                     )
                     syncOverlayWithTracker()
+                    syncSentinelWatchState()
                     if (!onLock) {
                         mainHandler.postDelayed(
                             stalePromptWatchdogRunnable,
@@ -308,6 +409,7 @@ class FpAccessibilityService : AccessibilityService() {
                     val wasShowing = isShowing
                     tracker.onPromptStopped(reason = "shizuku_logcat_stop")
                     syncOverlayWithTracker()
+                    syncSentinelWatchState()
                     if (wasShowing || tracker.fingerDown) {
                         recordDecision(tracker.lastDecisionReason)
                     } else if (DiagnosticLogger.enabled) {
@@ -334,6 +436,7 @@ class FpAccessibilityService : AccessibilityService() {
     fun reload() {
         mainHandler.post {
             syncPrewarmedOverlayPositionAndAsset()
+            syncSentinelWatchState()
             ShizukuBridge.applyZone()
         }
     }
@@ -352,6 +455,10 @@ class FpAccessibilityService : AccessibilityService() {
             val h = bounds.height().coerceAtLeast(2400)
             val sizePx = (calib.size * w).roundToInt().coerceAtLeast(120)
 
+            cachedCxPx = calib.cx * w
+            cachedCyPx = calib.cy * h
+            cachedSensorRadiusPx = (calib.sensorSize * 0.5f * w).coerceAtLeast(42f)
+
             lp.width = sizePx
             lp.height = sizePx
             lp.x = (calib.cx * w - sizePx / 2f).roundToInt()
@@ -360,6 +467,7 @@ class FpAccessibilityService : AccessibilityService() {
             anim.bindActiveAnimation(this, calib.speed, sizePx, autoPlay = false)
             view.visibility = View.VISIBLE
             view.alpha = 1f
+            anim.alpha = 1f
             anim.playImmediate()
             try {
                 wm.updateViewLayout(view, lp)
@@ -376,19 +484,29 @@ class FpAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val ev = event ?: return
+        val eventType = ev.eventType
+
+        // Standalone Finger-Up signal from Accessibility Touch Interaction End
+        if (eventType == AccessibilityEvent.TYPE_TOUCH_INTERACTION_END) {
+            if (standaloneTouchActive || (tracker.fingerDown && !ShizukuBridge.isConnectedAndActive())) {
+                onStandaloneSensorTouchUp("a11y_touch_interaction_end")
+            }
+            return
+        }
+
         val pkgName = ev.packageName?.toString() ?: ""
 
         // Fast-path 1: Immediately ignore all events from our own app so scrolling/sliders in FP Animator have zero overhead
         if (pkgName.isEmpty() || pkgName == packageName) return
 
-        val eventType = ev.eventType
         val isBioPkg = BiometricSignatures.isBiometricPackage(pkgName)
         val diagEnabled = DiagnosticLogger.enabled
 
         // Fast-path 2: If not a biometric/SystemUI package, only proceed if we need a window-close check or diagnostic log
         if (!isBioPkg) {
             if (!diagEnabled &&
-                !(tracker.isBiometricPromptActive && eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED)
+                !(tracker.isBiometricPromptActive && eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED) &&
+                !(standaloneTouchActive && isShowing && eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED)
             ) {
                 return
             }
@@ -396,7 +514,21 @@ class FpAccessibilityService : AccessibilityService() {
 
         val clsName = ev.className?.toString() ?: ""
         val onLock = isLockOrAodState()
+        val wasOnLock = tracker.onLockOrAod
         tracker.syncLockState(onLock)
+
+        // If device just transitioned from lock screen to unlocked, immediately hide overlay and disarm sentinel
+        if (wasOnLock && !onLock) {
+            mainHandler.removeCallbacks(standaloneHoldReleaseRunnable)
+            standaloneTouchActive = false
+            tracker.onDeviceUnlocked()
+            syncOverlayWithTracker()
+            syncSentinelWatchState()
+            recordDecision(tracker.lastDecisionReason)
+            return
+        }
+
+        syncSentinelWatchState()
 
         // Fast O(1) parcel read: read ev.text and ev.contentDescription directly from the event parcel (0 IPC!)
         var sourceViewId: String? = null
@@ -413,8 +545,11 @@ class FpAccessibilityService : AccessibilityService() {
                 sb.append(ev.contentDescription)
             }
 
-            // Only query ev.source on TYPE_WINDOW_STATE_CHANGED (when a dialog opens), never on continuous content events
-            if (eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            // Query ev.source only on discrete state/click events, never on continuous content events
+            if (eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
+                eventType == AccessibilityEvent.TYPE_VIEW_CLICKED ||
+                eventType == AccessibilityEvent.TYPE_VIEW_LONG_CLICKED
+            ) {
                 try {
                     val src = ev.source
                     if (src != null) {
@@ -440,7 +575,8 @@ class FpAccessibilityService : AccessibilityService() {
                 AccessibilityEvent.TYPE_WINDOWS_CHANGED -> "WINDOWS_CHG"
                 AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> "WIN_CONTENT"
                 AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED -> "NOTIF"
-                AccessibilityEvent.TYPE_ANNOUNCEMENT -> "ANNOUNCE"
+                AccessibilityEvent.TYPE_VIEW_CLICKED -> "VIEW_CLICK"
+                AccessibilityEvent.TYPE_VIEW_LONG_CLICKED -> "VIEW_LONG_CLICK"
                 else -> "EV_$eventType"
             }
             DiagnosticLogger.log(
@@ -454,14 +590,18 @@ class FpAccessibilityService : AccessibilityService() {
         if (isBioPkg) {
             // 1. Check lockout / PIN-only / after-reboot text
             if (combinedText.isNotEmpty() && BiometricSignatures.matchesLockoutOrPinOnlyText(combinedText)) {
+                mainHandler.removeCallbacks(standaloneHoldReleaseRunnable)
+                standaloneTouchActive = false
                 tracker.onLockoutOrPinOnly(source = "$pkgName:${combinedText.take(40)}")
                 syncOverlayWithTracker()
+                syncSentinelWatchState()
                 recordDecision(tracker.lastDecisionReason)
                 return
             }
 
             // 2. Check mismatch / "not recognized" / "try again" error text (only latches if fingerDown or <=1.5s ago)
             if (combinedText.isNotEmpty() && BiometricSignatures.matchesMismatchText(combinedText)) {
+                mainHandler.removeCallbacks(standaloneHoldReleaseRunnable)
                 val accepted = tracker.onMismatchError(source = "a11y:${combinedText.take(40)}")
                 if (accepted) {
                     syncOverlayWithTracker()
@@ -473,8 +613,11 @@ class FpAccessibilityService : AccessibilityService() {
             // 3. Check prompt cancel / dismissal text
             if (combinedText.isNotEmpty() && BiometricSignatures.matchesPromptDismissText(combinedText)) {
                 mainHandler.removeCallbacks(stalePromptWatchdogRunnable)
+                mainHandler.removeCallbacks(standaloneHoldReleaseRunnable)
+                standaloneTouchActive = false
                 tracker.onPromptStopped(reason = "a11y_dismiss:${combinedText.take(40)}")
                 syncOverlayWithTracker()
+                syncSentinelWatchState()
                 recordDecision(tracker.lastDecisionReason)
                 return
             }
@@ -501,6 +644,7 @@ class FpAccessibilityService : AccessibilityService() {
                         isLockOrAodNow = false
                     )
                     syncOverlayWithTracker()
+                    syncSentinelWatchState()
                     mainHandler.postDelayed(
                         stalePromptWatchdogRunnable,
                         BiometricSignatures.STALE_PROMPT_WATCHDOG_MS
@@ -511,22 +655,130 @@ class FpAccessibilityService : AccessibilityService() {
                         DiagnosticLogger.log("PROMPT_START", "Unlocked prompt active ($srcDesc)", tracker)
                     }
                 }
+
+                // Standalone direct UDFPS view click/long-click trigger when Shizuku is not active
+                if (!ShizukuBridge.isConnectedAndActive() &&
+                    (eventType == AccessibilityEvent.TYPE_VIEW_CLICKED ||
+                        eventType == AccessibilityEvent.TYPE_VIEW_LONG_CLICKED ||
+                        eventType == AccessibilityEvent.TYPE_TOUCH_INTERACTION_START) &&
+                    (matchedByClass || matchedByViewId)
+                ) {
+                    onStandaloneSensorTouchDown("a11y_udfps_view_touch")
+                }
                 return
             }
         }
 
-        // 5. Stale-state window watchdog on TYPE_WINDOWS_CHANGED:
-        //    Fast windowId check with zero cross-process root node IPC.
-        if (!onLock && tracker.isBiometricPromptActive &&
-            eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED &&
-            tracker.activePromptWindowId > 0
-        ) {
-            if (!isTrackedBiometricWindowStillOnScreen(tracker.activePromptWindowId)) {
-                mainHandler.removeCallbacks(stalePromptWatchdogRunnable)
-                tracker.onPromptStopped(reason = "prompt_window_closed")
-                syncOverlayWithTracker()
-                recordDecision(tracker.lastDecisionReason)
+        // 5. Window changes check:
+        //    a) In standalone mode, if the UDFPS HBM illumination window closes after finger-down, release touch.
+        //    b) For unlocked BiometricPrompt, if the tracked prompt window closes, stop the prompt immediately.
+        if (eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED) {
+            if (!onLock && tracker.isBiometricPromptActive && tracker.activePromptWindowId > 0) {
+                if (!isTrackedBiometricWindowStillOnScreen(tracker.activePromptWindowId)) {
+                    mainHandler.removeCallbacks(stalePromptWatchdogRunnable)
+                    mainHandler.removeCallbacks(standaloneHoldReleaseRunnable)
+                    standaloneTouchActive = false
+                    tracker.onPromptStopped(reason = "prompt_window_closed")
+                    syncOverlayWithTracker()
+                    syncSentinelWatchState()
+                    recordDecision(tracker.lastDecisionReason)
+                    return
+                }
             }
+
+            if (standaloneTouchActive && isShowing && !ShizukuBridge.isConnectedAndActive()) {
+                val holdElapsed = System.currentTimeMillis() - tracker.lastFingerDownAtMs
+                if (holdElapsed >= MIN_HBM_WINDOW_HOLD_MS) {
+                    val curCount = runCatching { windows?.size ?: -1 }.getOrDefault(-1)
+                    if (curCount > 0 && lastWindowCountWhileShowing > 0 && curCount < lastWindowCountWhileShowing) {
+                        onStandaloneSensorTouchUp("udfps_hbm_window_closed")
+                    } else if (curCount > lastWindowCountWhileShowing) {
+                        lastWindowCountWhileShowing = curCount
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Attaches the 1x1 transparent outside-touch sentinel window used by the Standalone Engine.
+     * It is completely untouchable (`FLAG_NOT_TOUCHABLE`) during normal unlocked phone use,
+     * and only enables `FLAG_WATCH_OUTSIDE_TOUCH` while `tracker.requestActive == true` (lock screen or active BiometricPrompt).
+     */
+    @Suppress("ClickableViewAccessibility")
+    private fun ensureTouchSentinelAttached() {
+        if (isSentinelAttached && touchSentinelView != null && touchSentinelLp != null) {
+            return
+        }
+        val sentinel = View(this).apply {
+            setBackgroundColor(Color.TRANSPARENT)
+            alpha = 0f
+            setOnTouchListener { _, event ->
+                if (!ShizukuBridge.isConnectedAndActive()) {
+                    when (event.actionMasked) {
+                        android.view.MotionEvent.ACTION_OUTSIDE,
+                        android.view.MotionEvent.ACTION_DOWN -> {
+                            val rx = event.rawX
+                            val ry = event.rawY
+                            val hasCoords = rx > 1f || ry > 1f
+                            if (!hasCoords || isPointInsideSensorZone(rx, ry)) {
+                                onStandaloneSensorTouchDown("standalone_sensor_touch")
+                            } else if (standaloneTouchActive) {
+                                // User tapped outside the sensor circle (e.g. Cancel button or PIN pad)
+                                onStandaloneSensorTouchUp("touch_outside_sensor_circle")
+                            }
+                        }
+                        android.view.MotionEvent.ACTION_UP,
+                        android.view.MotionEvent.ACTION_CANCEL -> {
+                            if (standaloneTouchActive) {
+                                onStandaloneSensorTouchUp("sentinel_touch_up")
+                            }
+                        }
+                    }
+                }
+                false
+            }
+        }
+
+        val lp = WindowManager.LayoutParams(
+            1,
+            1,
+            0,
+            0,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            buildSentinelFlags(watchOutsideTouch = false),
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+        }
+
+        try {
+            wm.addView(sentinel, lp)
+            touchSentinelView = sentinel
+            touchSentinelLp = lp
+            isSentinelAttached = true
+            isSentinelWatchingTouch = false
+        } catch (_: Throwable) {
+            isSentinelAttached = false
+        }
+    }
+
+    /**
+     * Dynamically enables `FLAG_WATCH_OUTSIDE_TOUCH` on the 1x1 sentinel ONLY when
+     * `tracker.requestActive` is true (lock screen or active unlocked BiometricPrompt) AND Shizuku is not active.
+     * During normal unlocked phone use, the sentinel has `FLAG_NOT_TOUCHABLE` (0% touch overhead).
+     */
+    private fun syncSentinelWatchState() {
+        ensureTouchSentinelAttached()
+        val sentinel = touchSentinelView ?: return
+        val lp = touchSentinelLp ?: return
+        val shouldWatch = tracker.requestActive && !ShizukuBridge.isConnectedAndActive()
+        if (shouldWatch != isSentinelWatchingTouch) {
+            isSentinelWatchingTouch = shouldWatch
+            lp.flags = buildSentinelFlags(watchOutsideTouch = shouldWatch)
+            try {
+                wm.updateViewLayout(sentinel, lp)
+            } catch (_: Throwable) {}
         }
     }
 
@@ -541,6 +793,10 @@ class FpAccessibilityService : AccessibilityService() {
         val w = bounds.width().coerceAtLeast(1080)
         val h = bounds.height().coerceAtLeast(2400)
         val sizePx = (calib.size * w).roundToInt().coerceAtLeast(120)
+
+        cachedCxPx = calib.cx * w
+        cachedCyPx = calib.cy * h
+        cachedSensorRadiusPx = (calib.sensorSize * 0.5f * w).coerceAtLeast(42f)
 
         // Keep root container View.VISIBLE with alpha=0f when idle so WindowManagerService keeps the
         // SurfaceControl allocated (zero relayoutWindow() Binder IPC on finger-down -> <2ms response),
@@ -598,6 +854,10 @@ class FpAccessibilityService : AccessibilityService() {
         val w = bounds.width().coerceAtLeast(1080)
         val h = bounds.height().coerceAtLeast(2400)
         val sizePx = (calib.size * w).roundToInt().coerceAtLeast(120)
+
+        cachedCxPx = calib.cx * w
+        cachedCyPx = calib.cy * h
+        cachedSensorRadiusPx = (calib.sensorSize * 0.5f * w).coerceAtLeast(42f)
 
         lp.width = sizePx
         lp.height = sizePx
@@ -702,6 +962,8 @@ class FpAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() {
         mainHandler.removeCallbacks(stalePromptWatchdogRunnable)
+        mainHandler.removeCallbacks(standaloneHoldReleaseRunnable)
+        standaloneTouchActive = false
         tracker.onScreenOffOrReset("service interrupted (onInterrupt)")
         recordDecision(tracker.lastDecisionReason)
         hideImmediate(reason = "onInterrupt")
@@ -711,6 +973,8 @@ class FpAccessibilityService : AccessibilityService() {
         instance = null
         mainHandler.removeCallbacks(hardMaxDurationFailSafe)
         mainHandler.removeCallbacks(stalePromptWatchdogRunnable)
+        mainHandler.removeCallbacks(standaloneHoldReleaseRunnable)
+        standaloneTouchActive = false
         tracker.onScreenOffOrReset("service destroyed (onDestroy)")
         try {
             prefs.unregisterOnSharedPreferenceChangeListener(prefsListener)
@@ -722,6 +986,15 @@ class FpAccessibilityService : AccessibilityService() {
         ShizukuBridge.onFingerprintError = null
         ShizukuBridge.onBiometricPromptStateChanged = null
         releaseAodWakeLock()
+        touchSentinelView?.let {
+            try {
+                wm.removeViewImmediate(it)
+            } catch (_: Throwable) {}
+        }
+        touchSentinelView = null
+        touchSentinelLp = null
+        isSentinelAttached = false
+        isSentinelWatchingTouch = false
         overlayContainer?.let {
             try {
                 wm.removeViewImmediate(it)

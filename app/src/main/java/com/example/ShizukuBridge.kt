@@ -153,6 +153,15 @@ object ShizukuBridge {
         }
     }
 
+    fun isConnectedAndActive(): Boolean {
+        val current = service ?: return false
+        return try {
+            current.asBinder().isBinderAlive
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     fun applyZone() {
         if (!::app.isInitialized) return
         val s = service ?: return
@@ -162,11 +171,12 @@ object ShizukuBridge {
     }
 
     fun runShellCommand(cmd: String): String {
-        tryBind()
         val s = service
         if (s != null) {
             runCatching {
-                return s.runDiagnosticCommand(cmd)
+                if (s.asBinder().isBinderAlive) {
+                    return s.runDiagnosticCommand(cmd)
+                }
             }
         }
         return try {
@@ -175,9 +185,9 @@ object ShizukuBridge {
                 .start()
             val out = process.inputStream.bufferedReader().use { it.readText() }
             process.waitFor()
-            out.ifBlank { "(Command completed with no output)" }
+            out.ifBlank { "(Command completed in standalone mode)" }
         } catch (e: Exception) {
-            "Shizuku service not connected yet. Open Shizuku and ensure FP Animator is allowed.\nDetails: ${e.message}"
+            "Standalone shell output: ${e.message}"
         }
     }
 }

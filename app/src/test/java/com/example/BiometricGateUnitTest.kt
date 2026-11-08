@@ -101,4 +101,27 @@ class BiometricGateUnitTest {
         assertTrue(tracker.latchedTerminal)
         tracker.onFingerUp()
     }
+
+    @Test
+    @Suppress("DEPRECATION")
+    fun `standalone sentinel flags stay non-touchable when idle and watch outside touch when requestActive`() {
+        val idleFlags = FpAccessibilityService.buildSentinelFlags(watchOutsideTouch = false)
+        assertTrue(
+            "Idle sentinel must include FLAG_NOT_TOUCHABLE",
+            (idleFlags and android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) != 0
+        )
+
+        val activeFlags = FpAccessibilityService.buildSentinelFlags(watchOutsideTouch = true)
+        assertTrue(
+            "Active sentinel must include FLAG_NOT_TOUCH_MODAL and FLAG_WATCH_OUTSIDE_TOUCH",
+            (activeFlags and android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL) != 0 &&
+                (activeFlags and android.view.WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH) != 0
+        )
+        assertEquals(
+            "Active sentinel must not include FLAG_NOT_TOUCHABLE",
+            0,
+            activeFlags and android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        )
+    }
 }
+

@@ -56,16 +56,11 @@ object Setup {
     }.getOrDefault(false)
 
     fun allRequiredPermissionsGranted(c: Context): Boolean =
-        shizukuInstalled(c) &&
-            shizukuRunning() &&
-            shizukuAllowed() &&
-            serviceEnabled(c) &&
-            batteryOk(c)
+        serviceEnabled(c) && batteryOk(c)
 
     fun isFullSetupComplete(c: Context): Boolean =
         allRequiredPermissionsGranted(c) &&
             Prefs.isBgDone(c) &&
-            Prefs.isStockStepDone(c) &&
             Prefs.isCalibDone(c) &&
             Prefs.isAnimStepDone(c)
 }
