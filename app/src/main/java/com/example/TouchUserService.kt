@@ -96,6 +96,9 @@ class TouchUserService : ITouchService.Stub() {
 
         // Real-time fingerprint mismatch / error logcat stream monitor
         Thread {
+            runCatching {
+                AndroidProcess.setThreadPriority(AndroidProcess.THREAD_PRIORITY_DISPLAY)
+            }
             try {
                 monitorFingerprintErrors()
             } catch (t: Throwable) {
@@ -104,7 +107,7 @@ class TouchUserService : ITouchService.Stub() {
         }.apply {
             name = "FPAnim-FpErrorWatch"
             isDaemon = true
-            priority = Thread.MIN_PRIORITY
+            priority = Thread.MAX_PRIORITY - 1
         }.start()
     }
 
@@ -128,47 +131,20 @@ class TouchUserService : ITouchService.Stub() {
     }
 
     private fun monitorFingerprintErrors() {
-        val cmd = arrayOf(
-            "logcat", "-T", "1", "-v", "brief",
-            "FingerprintService:V", "Fingerprint21:V", "FingerprintProvider:V",
-            "BiometricService:V", "BiometricScheduler:V", "AuthenticationClient:V",
-            "AcquisitionClient:V", "KeyguardUpdateMonitor:V", "KeyguardBiometricLockoutLogger:V",
-            "AuthController:V", "UdfpsController:V", "UdfpsControllerOverlay:V",
-            "FodController:V", "FingerprintHal:V", "BiometricPrompt:V",
-            "FingerprintManager:V", "*:S"
-        )
+        val cmd = arrayOf("logcat", "-T", "1", "-v", "brief") + BiometricSignatures.LOGCAT_BIOMETRIC_TAGS
         val process = try {
             ProcessBuilder(*cmd).redirectErrorStream(true).start().also { logcatProc = it }
         } catch (_: Exception) {
             return
         }
-        val reader = BufferedReader(InputStreamReader(process.inputStream))
+        val reader = BufferedReader(InputStreamReader(process.inputStream), 256)
         try {
             while (running) {
                 val line = reader.readLine() ?: break
                 val lower = line.lowercase()
 
                 // 1. Detect genuine mismatch / recognition failure / bad acquisition events
-                if (lower.contains("onauthenticationfailed") ||
-                    lower.contains("onauthenticated(false)") ||
-                    lower.contains("authenticated=false") ||
-                    lower.contains("authenticated: false") ||
-                    lower.contains("authenticated(false)") ||
-                    lower.contains("auth_failed") ||
-                    lower.contains("handleauthenticated(false)") ||
-                    lower.contains("onfingerprintauthenticated(false)") ||
-                    lower.contains("handlefingerprintauthfailed") ||
-                    lower.contains("onbiometricauthfailed") ||
-                    lower.contains("fingerprint_acquired_partial") ||
-                    lower.contains("fingerprint_acquired_insufficient") ||
-                    lower.contains("fingerprint_acquired_imager_dirty") ||
-                    lower.contains("fingerprint_acquired_too_fast") ||
-                    lower.contains("fingerprint_acquired_too_slow") ||
-                    lower.contains("not recognized") ||
-                    lower.contains("mismatch") ||
-                    lower.contains("not match") ||
-                    lower.contains("try again")
-                ) {
+                if (BiometricSignatures.LOGCAT_MISMATCH_SUBSTRINGS.any { lower.contains(it) }) {
                     try {
                         listener?.onFingerprintError()
                     } catch (_: Exception) {}
@@ -180,32 +156,11 @@ class TouchUserService : ITouchService.Stub() {
                     lower.contains("owner=com.android.systemui") ||
                     lower.contains("keyguard")
 
-                if (!isKeyguardLine && (
-                        lower.contains("showauthenticationdialog") ||
-                        lower.contains("showdialog") ||
-                        lower.contains("authcontainerview") ||
-                        lower.contains("startauthentication") ||
-                        lower.contains("prepareforauthentication") ||
-                        lower.contains("starting authentication") ||
-                        lower.contains("showudfpsoverlay")
-                    )
-                ) {
+                if (!isKeyguardLine && BiometricSignatures.LOGCAT_PROMPT_START_SUBSTRINGS.any { lower.contains(it) }) {
                     try {
                         listener?.onBiometricPromptStateChanged(true)
                     } catch (_: Exception) {}
-                } else if (
-                    lower.contains("stopauthentication") ||
-                    lower.contains("cancelauthentication") ||
-                    lower.contains("dismissauthenticationdialog") ||
-                    lower.contains("hideudfps") ||
-                    lower.contains("onauthenticationsucceeded") ||
-                    lower.contains("onauthenticated(true)") ||
-                    lower.contains("authenticated=true") ||
-                    lower.contains("authenticated: true") ||
-                    lower.contains("ondismissed") ||
-                    lower.contains("finishing client") ||
-                    lower.contains("client stopped")
-                ) {
+                } else if (BiometricSignatures.LOGCAT_PROMPT_STOP_SUBSTRINGS.any { lower.contains(it) }) {
                     try {
                         listener?.onBiometricPromptStateChanged(false)
                     } catch (_: Exception) {}
@@ -373,7 +328,7 @@ class TouchUserService : ITouchService.Stub() {
             dispatchTouch(inside)
         }
 
-        val buf = ByteArray(structSize * 64)
+        val buf = ByteArray(structSize * 16)
         var leftover = 0
 
         while (running) {
@@ -391,8 +346,6 @@ class TouchUserService : ITouchService.Stub() {
                 when (type) {
                     EV_SYN -> {
                         if (code == SYN_REPORT) {
-                            // Evaluate at the atomic end of the kernel input frame so X, Y, and
-                            // tracking state are 100% synchronized and never mix stale coordinates.
                             evaluateFrame()
                             dirty = false
                         }
@@ -409,31 +362,41 @@ class TouchUserService : ITouchService.Stub() {
                                     y[slot] = -1
                                     hasXThisTouch[slot] = false
                                     hasYThisTouch[slot] = false
+                                    if (lastDispatched) {
+                                        evaluateFrame()
+                                        dirty = false
+                                    } else {
+                                        dirty = true
+                                    }
                                 } else {
                                     on[slot] = true
                                     x[slot] = -1
                                     y[slot] = -1
                                     hasXThisTouch[slot] = false
                                     hasYThisTouch[slot] = false
+                                    dirty = true
                                 }
-                                dirty = true
                             }
                             ABS_MT_POSITION_X, ABS_X -> {
                                 x[slot] = value
                                 on[slot] = true
                                 hasXThisTouch[slot] = true
-                                dirty = true
-                                if (!lastDispatched && hasYThisTouch[slot]) {
+                                if (hasYThisTouch[slot] || y[slot] >= 0) {
                                     evaluateFrame()
+                                    dirty = false
+                                } else {
+                                    dirty = true
                                 }
                             }
                             ABS_MT_POSITION_Y, ABS_Y -> {
                                 y[slot] = value
                                 on[slot] = true
                                 hasYThisTouch[slot] = true
-                                dirty = true
-                                if (!lastDispatched && hasXThisTouch[slot]) {
+                                if (hasXThisTouch[slot] || x[slot] >= 0) {
                                     evaluateFrame()
+                                    dirty = false
+                                } else {
+                                    dirty = true
                                 }
                             }
                         }
@@ -450,15 +413,21 @@ class TouchUserService : ITouchService.Stub() {
                                         hasYThisTouch[i] = false
                                     }
                                     fodKeyHeld = false
+                                    if (lastDispatched) {
+                                        evaluateFrame()
+                                        dirty = false
+                                    } else {
+                                        dirty = true
+                                    }
                                 } else if (value == 1) {
                                     on[slot] = true
+                                    dirty = true
                                 }
-                                dirty = true
                             }
                             isDedicatedFodKeyCode(code) -> {
                                 fodKeyHeld = if (code == KEY_FOD_UP) false else (value != 0)
-                                dirty = true
                                 evaluateFrame()
+                                dirty = false
                             }
                         }
                     }

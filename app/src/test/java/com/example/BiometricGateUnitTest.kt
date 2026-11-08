@@ -8,83 +8,97 @@ import org.junit.Test
 class BiometricGateUnitTest {
 
     @Test
-    fun `unlocked screen with no active biometric prompt never shows overlay`() {
-        val gate = BiometricGateState()
-        gate.updateEnvironment(isLockOrAod = false, canAcceptLockScreenFp = false, isUnlockedPromptActive = false)
-        assertFalse(gate.requestActive)
-        assertFalse(gate.onFingerDown())
-        assertFalse(gate.visible)
-        gate.onFingerUp()
+    fun `unlocked screen with no active biometric prompt blocks touch and records reason`() {
+        val tracker = BiometricRequestTracker()
+        assertFalse(tracker.onFingerDown(isLockOrAodNow = false, nowMs = 10_000L))
+        assertFalse(tracker.visible)
+        assertEquals("Blocked: unlocked, no biometric request", tracker.lastDecisionReason)
+        tracker.onFingerUp()
     }
 
     @Test
     fun `lock screen shows on touch and latches terminal on mismatch until finger lifts`() {
-        val gate = BiometricGateState()
-        gate.updateEnvironment(isLockOrAod = true, canAcceptLockScreenFp = true, isUnlockedPromptActive = false)
-        assertTrue(gate.requestActive)
+        val tracker = BiometricRequestTracker()
 
-        // Finger down -> visible = true
-        assertTrue(gate.onFingerDown())
-        assertTrue(gate.visible)
+        // Finger down on lock screen -> visible = true
+        assertTrue(tracker.onFingerDown(isLockOrAodNow = true, nowMs = 20_000L))
+        assertTrue(tracker.visible)
+        assertEquals("Show: lock screen finger down", tracker.lastDecisionReason)
 
-        // Mismatch error -> visible immediately false, latchedTerminal = true
-        assertFalse(gate.latchTerminal("mismatch_error"))
-        assertTrue(gate.latchedTerminal)
-        assertFalse(gate.visible)
+        // Mismatch error while finger is down -> latches terminal and hides immediately
+        assertTrue(tracker.onMismatchError(source = "test_mismatch", nowMs = 20_400L))
+        assertTrue(tracker.latchedTerminal)
+        assertFalse(tracker.visible)
 
-        // Keeping same finger down must NOT re-show the overlay
-        assertFalse(gate.onFingerDown())
-        assertFalse(gate.visible)
+        // Keeping the same finger down must NOT re-show the overlay
+        assertFalse(tracker.onFingerDown(isLockOrAodNow = true, nowMs = 20_500L))
+        assertFalse(tracker.visible)
 
         // Lifting finger clears latchedTerminal
-        assertFalse(gate.onFingerUp())
-        assertFalse(gate.latchedTerminal)
+        assertFalse(tracker.onFingerUp())
+        assertFalse(tracker.latchedTerminal)
 
-        // Touching again while requestActive is true shows overlay again
-        assertTrue(gate.onFingerDown())
-        assertTrue(gate.visible)
+        // Touching again while on lock screen shows overlay again
+        assertTrue(tracker.onFingerDown(isLockOrAodNow = true, nowMs = 21_000L))
+        assertTrue(tracker.visible)
     }
 
     @Test
-    fun `lock screen in PIN-only or lockout restriction shows nothing`() {
-        val gate = BiometricGateState()
-        gate.updateEnvironment(
-            isLockOrAod = true,
-            canAcceptLockScreenFp = true,
-            isUnlockedPromptActive = false,
-            isLockScreenPinOnly = true
-        )
-        assertFalse(gate.requestActive)
-        assertFalse(gate.onFingerDown())
-        assertFalse(gate.visible)
+    fun `stray error when finger is not down and older than 1500ms is ignored and does not block next touch`() {
+        val tracker = BiometricRequestTracker()
+        // Stray error with no recent touch -> ignored
+        assertFalse(tracker.onMismatchError(source = "stray_log", nowMs = 50_000L))
+        assertFalse(tracker.latchedTerminal)
+
+        // Next real touch on lock screen succeeds immediately
+        assertTrue(tracker.onFingerDown(isLockOrAodNow = true, nowMs = 55_000L))
+        assertTrue(tracker.visible)
+        tracker.onFingerUp()
+
+        // Stray error 2,000 ms after last touch-down (> 1,500 ms window) -> ignored
+        assertFalse(tracker.onMismatchError(source = "late_stray", nowMs = 57_001L))
+        assertFalse(tracker.latchedTerminal)
+        assertTrue(tracker.onFingerDown(isLockOrAodNow = true, nowMs = 58_000L))
+        assertTrue(tracker.visible)
     }
 
     @Test
-    fun `unlocked screen with active BiometricPrompt shows on touch and hides on success or dismiss`() {
-        val gate = BiometricGateState()
-        gate.updateEnvironment(isLockOrAod = false, canAcceptLockScreenFp = false, isUnlockedPromptActive = true)
-        assertTrue(gate.requestActive)
-        assertTrue(gate.onFingerDown())
-        assertTrue(gate.visible)
+    fun `hard max duration hides overlay even with finger down and latches until finger lifts`() {
+        val tracker = BiometricRequestTracker()
+        assertEquals(5_000L, BiometricSignatures.HARD_MAX_OVERLAY_DURATION_MS)
 
-        // Prompt succeeds -> hides immediately and clears unlockedPromptRequestActive
-        assertFalse(gate.latchTerminal("unlock_success"))
-        assertFalse(gate.visible)
-        assertFalse(gate.requestActive)
-        gate.onFingerUp()
+        assertTrue(tracker.onFingerDown(isLockOrAodNow = true, nowMs = 10_000L))
+        assertTrue(tracker.visible)
+
+        // 5s hard max duration fires while finger is still down
+        assertFalse(tracker.onHardMaxDurationReached())
+        assertTrue(tracker.latchedTerminal)
+        assertFalse(tracker.visible)
+
+        // Finger still held down -> stays hidden
+        assertFalse(tracker.onFingerDown(isLockOrAodNow = true, nowMs = 15_100L))
+        assertFalse(tracker.visible)
+
+        // Lift finger -> clears latch
+        tracker.onFingerUp()
+        assertFalse(tracker.latchedTerminal)
     }
 
     @Test
-    fun `BiometricSignatures matches SystemUI packages, classes, view IDs, prompt texts, and mismatch errors`() {
-        assertTrue(BiometricSignatures.isBiometricPackage("com.android.systemui"))
-        assertTrue(BiometricSignatures.isBiometricPackage("com.transsion.applock"))
-        assertFalse(BiometricSignatures.isBiometricPackage("com.whatsapp"))
+    fun `unlocked screen with active BiometricPrompt shows on touch and hides when prompt ends even if finger is down`() {
+        val tracker = BiometricRequestTracker()
+        tracker.onPromptStarted(source = "AuthContainerView", windowId = 42, isLockOrAodNow = false)
+        assertTrue(tracker.isBiometricPromptActive)
+        assertTrue(tracker.requestActive)
 
-        assertTrue(BiometricSignatures.matchesPromptClass("com.android.systemui.biometrics.AuthContainerView"))
-        assertTrue(BiometricSignatures.matchesPromptViewId("com.android.systemui:id/udfps_view"))
-        assertTrue(BiometricSignatures.matchesPromptText("Touch the fingerprint sensor"))
-        assertTrue(BiometricSignatures.matchesPromptText("Confirm your fingerprint to continue"))
-        assertTrue(BiometricSignatures.matchesMismatchText("Not recognized. Try again."))
-        assertTrue(BiometricSignatures.matchesLockoutOrPinOnlyText("Too many attempts. Try again in 30 seconds."))
+        assertTrue(tracker.onFingerDown(isLockOrAodNow = false, nowMs = 30_000L))
+        assertTrue(tracker.visible)
+
+        // Prompt ends while finger is still down -> hides immediately and latches until finger lifts
+        assertFalse(tracker.onPromptStopped("prompt_dismissed"))
+        assertFalse(tracker.isBiometricPromptActive)
+        assertFalse(tracker.visible)
+        assertTrue(tracker.latchedTerminal)
+        tracker.onFingerUp()
     }
 }

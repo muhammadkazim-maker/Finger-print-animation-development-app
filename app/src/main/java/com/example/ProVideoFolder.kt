@@ -752,11 +752,21 @@ object ProVideoFrameCache {
         }
     }
 
+    private val compactMemoryCache: LruCache<String, Bitmap> = run {
+        val maxKb = (Runtime.getRuntime().maxMemory() / 1024L).toInt()
+        val cacheSizeKb = (maxKb / 8).coerceIn(8 * 1024, 24 * 1024)
+        object : LruCache<String, Bitmap>(cacheSizeKb) {
+            override fun sizeOf(key: String, value: Bitmap): Int {
+                return (value.allocationByteCount / 1024).coerceAtLeast(1)
+            }
+        }
+    }
+
     private fun lockFor(key: String): Any = synchronized(decodeLocks) {
         decodeLocks.getOrPut(key) { Any() }
     }
 
-    fun getCachedAtlas(assetPath: String, @Suppress("UNUSED_PARAMETER") preferCompact: Boolean = false): Bitmap? {
+    fun getCachedAtlas(assetPath: String, preferCompact: Boolean = false): Bitmap? {
         val atlasPath = ProVideoFolder.atlasPathFor(assetPath)
         val pinned = pinnedActiveBitmap
         if (pinned != null && !pinned.isRecycled && pinnedActiveAtlasPath == atlasPath) {
@@ -765,6 +775,12 @@ object ProVideoFrameCache {
         synchronized(memoryCache) {
             val full = memoryCache.get(atlasPath)
             if (full != null && !full.isRecycled) return full
+        }
+        if (preferCompact) {
+            synchronized(compactMemoryCache) {
+                val compact = compactMemoryCache.get(atlasPath)
+                if (compact != null && !compact.isRecycled) return compact
+            }
         }
         return null
     }
@@ -782,7 +798,7 @@ object ProVideoFrameCache {
         return null
     }
 
-    fun getOrDecodeAtlas(context: Context, assetPath: String, @Suppress("UNUSED_PARAMETER") preferCompact: Boolean = false): Bitmap? {
+    fun getOrDecodeAtlas(context: Context, assetPath: String, preferCompact: Boolean = false): Bitmap? {
         val item = ProVideoFolder.findItem(assetPath)
         val atlasPath = item?.atlasAssetPath ?: ProVideoFolder.atlasPathFor(assetPath)
         val pinned = pinnedActiveBitmap
@@ -793,18 +809,38 @@ object ProVideoFrameCache {
             val cached = memoryCache.get(atlasPath)
             if (cached != null && !cached.isRecycled) return cached
         }
+        if (preferCompact) {
+            synchronized(compactMemoryCache) {
+                val cachedCompact = compactMemoryCache.get(atlasPath)
+                if (cachedCompact != null && !cachedCompact.isRecycled) return cachedCompact
+            }
+        }
 
-        synchronized(lockFor(atlasPath)) {
+        val lockKey = if (preferCompact) "$atlasPath#compact" else atlasPath
+        synchronized(lockFor(lockKey)) {
             synchronized(memoryCache) {
                 val cached = memoryCache.get(atlasPath)
                 if (cached != null && !cached.isRecycled) return cached
             }
+            if (preferCompact) {
+                synchronized(compactMemoryCache) {
+                    val cachedCompact = compactMemoryCache.get(atlasPath)
+                    if (cachedCompact != null && !cachedCompact.isRecycled) return cachedCompact
+                }
+            }
             val appCtx = context.applicationContext ?: context
-            val decoded = decodeAtlasFromAssets(appCtx, atlasPath, sampleSize = 1)
+            val sampleSize = if (preferCompact) 2 else 1
+            val decoded = decodeAtlasFromAssets(appCtx, atlasPath, sampleSize = sampleSize)
             if (decoded != null) {
                 runCatching { decoded.prepareToDraw() }
-                synchronized(memoryCache) {
-                    memoryCache.put(atlasPath, decoded)
+                if (preferCompact) {
+                    synchronized(compactMemoryCache) {
+                        compactMemoryCache.put(atlasPath, decoded)
+                    }
+                } else {
+                    synchronized(memoryCache) {
+                        memoryCache.put(atlasPath, decoded)
+                    }
                 }
             }
             return decoded
@@ -1004,6 +1040,9 @@ object ProVideoFrameCache {
             synchronized(memoryCache) {
                 memoryCache.evictAll()
             }
+            synchronized(compactMemoryCache) {
+                compactMemoryCache.evictAll()
+            }
             synchronized(layersCache) {
                 layersCache.evictAll()
             }
@@ -1076,7 +1115,7 @@ object ProVideoFrameCache {
         val item = ProVideoFolder.findItem(targetPath)
         val atlasPath = item?.atlasAssetPath ?: ProVideoFolder.atlasPathFor(targetPath)
 
-        val already = getCachedAtlas(atlasPath, preferCompact = false)
+        val already = getCachedAtlas(atlasPath, preferCompact = preferCompact)
         if (already != null) {
             if (isActivePrewarm) {
                 pinnedActiveAtlasPath = atlasPath
@@ -1091,7 +1130,7 @@ object ProVideoFrameCache {
             return
         }
 
-        val inflightKey = atlasPath
+        val inflightKey = if (preferCompact) "$atlasPath#compact" else atlasPath
         synchronized(inFlightCallbacks) {
             val existingList = inFlightCallbacks[inflightKey]
             if (existingList != null) {
@@ -1105,8 +1144,8 @@ object ProVideoFrameCache {
 
         val executor = if (isActivePrewarm || !preferCompact) priorityOverlayExecutor else decodeExecutor
         executor.execute {
-            val bmp = getOrDecodeAtlas(appCtx, atlasPath, preferCompact = false)
-            if (bmp != null && (isActivePrewarm || Prefs.getSelectedVideoAsset(appCtx) == targetPath)) {
+            val bmp = getOrDecodeAtlas(appCtx, atlasPath, preferCompact = preferCompact)
+            if (bmp != null && !preferCompact && (isActivePrewarm || Prefs.getSelectedVideoAsset(appCtx) == targetPath)) {
                 runCatching { bmp.prepareToDraw() }
                 pinnedActiveAtlasPath = atlasPath
                 pinnedActiveBitmap = bmp
@@ -1131,7 +1170,7 @@ object ProVideoFrameCache {
         val appCtx = context.applicationContext ?: context
         val subset = ProVideoFolder.items.take(count)
         for (item in subset) {
-            if (getCachedAtlas(item.atlasAssetPath) == null) {
+            if (getCachedAtlas(item.atlasAssetPath, preferCompact = true) == null) {
                 prewarmAsync(appCtx, specificAssetPath = item.assetPath, preferCompact = true)
             }
         }
@@ -1140,8 +1179,7 @@ object ProVideoFrameCache {
 
 /**
  * Hardware-accelerated, zero-black-background HD animation view that renders:
- * 1. The 14 uploaded `.mp4` Pro Videos (`8x8` 1120x1120 HD frame atlases) with sub-frame cross-fade
- *    interpolation and an aligned additive `PorterDuff.Mode.ADD` HDR optical bloom pass, AND
+ * 1. The 14 uploaded `.mp4` Pro Videos (`8x8` 1120x1120 HD frame atlases), AND
  * 2. All 84 high-res `512x512` HD Real & PDF HUD Designs at native **60/120fps** using archetype-aware
  *    motion (keeping continuous waves, spirographs, lightning, stars & polygons 100% intact while
  *    counter-rotating multi-ring HUDs strictly along their natural empty radial gaps).
@@ -1149,22 +1187,12 @@ object ProVideoFrameCache {
 class LoopingAssetVideoView(context: Context) : View(context), Choreographer.FrameCallback {
 
     private val basePaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
-    private val blendPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
-    private val additiveBitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG).apply {
-        xfermode = PorterDuffXfermode(PorterDuff.Mode.ADD)
-    }
-    private val additiveFxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        xfermode = PorterDuffXfermode(PorterDuff.Mode.ADD)
-    }
     private val needlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
-        xfermode = PorterDuffXfermode(PorterDuff.Mode.ADD)
     }
 
     private val srcRect = Rect()
-    private val nextSrcRect = Rect()
     private val fullBmpSrcRect = Rect()
     private val dstRect = RectF()
 
@@ -1288,8 +1316,8 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
         loadedItem = ProVideoFolder.findItem(assetPath)
 
         if (pathChanged || atlasBitmap == null || atlasBitmap?.isRecycled == true) {
-            designLayers = ProVideoFrameCache.getCachedDesignLayers(assetPath)
-            val cached = ProVideoFrameCache.getCachedAtlas(assetPath)
+            designLayers = if (preferCompact) null else ProVideoFrameCache.getCachedDesignLayers(assetPath)
+            val cached = ProVideoFrameCache.getCachedAtlas(assetPath, preferCompact = preferCompact)
             if (cached != null) {
                 atlasBitmap = cached
                 invalidate()
@@ -1301,7 +1329,9 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
                 ) { decoded ->
                     if (loadedAssetPath == assetPath && decoded != null) {
                         atlasBitmap = decoded
-                        designLayers = ProVideoFrameCache.getCachedDesignLayers(assetPath)
+                        if (!preferCompact) {
+                            designLayers = ProVideoFrameCache.getCachedDesignLayers(assetPath)
+                        }
                         invalidate()
                         if (isPlaying) {
                             scheduleNextFrame()
@@ -1326,8 +1356,8 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
         isPlaying = true
         val path = loadedAssetPath
         if ((atlasBitmap == null || atlasBitmap?.isRecycled == true) && path != null) {
-            designLayers = ProVideoFrameCache.getCachedDesignLayers(path)
-            val cached = ProVideoFrameCache.getCachedAtlas(path)
+            designLayers = if (preferCompactDecode) null else ProVideoFrameCache.getCachedDesignLayers(path)
+            val cached = ProVideoFrameCache.getCachedAtlas(path, preferCompact = preferCompactDecode)
             if (cached != null) {
                 atlasBitmap = cached
             } else {
@@ -1338,25 +1368,33 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
                 ) { decoded ->
                     if (loadedAssetPath == path && decoded != null) {
                         atlasBitmap = decoded
-                        designLayers = ProVideoFrameCache.getCachedDesignLayers(path)
+                        if (!preferCompactDecode) {
+                            designLayers = ProVideoFrameCache.getCachedDesignLayers(path)
+                        }
                         invalidate()
                         if (isPlaying) scheduleNextFrame()
                     }
                 }
             }
         }
-        lastFrameTimeNanos = 0L
-        scheduleNextFrame()
-        invalidate()
+        if (lastFrameTimeNanos == 0L) {
+            scheduleNextFrame()
+            invalidate()
+        } else {
+            scheduleNextFrame()
+        }
     }
 
     fun pauseAndReset() {
+        val wasPlaying = isPlaying
         isPlaying = false
         currentFrameFloat = 0f
         elapsedAnimSeconds = 0f
         lastFrameTimeNanos = 0L
         unscheduleFrameCallback()
-        invalidate()
+        if (wasPlaying) {
+            invalidate()
+        }
     }
 
     fun primeAtFrameZero() {
@@ -1365,8 +1403,8 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
         lastFrameTimeNanos = 0L
         val path = loadedAssetPath
         if ((atlasBitmap == null || atlasBitmap?.isRecycled == true) && path != null) {
-            designLayers = ProVideoFrameCache.getCachedDesignLayers(path)
-            val cached = ProVideoFrameCache.getCachedAtlas(path)
+            designLayers = if (preferCompactDecode) null else ProVideoFrameCache.getCachedDesignLayers(path)
+            val cached = ProVideoFrameCache.getCachedAtlas(path, preferCompact = preferCompactDecode)
             if (cached != null) {
                 atlasBitmap = cached
             } else {
@@ -1377,7 +1415,9 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
                 ) { decoded ->
                     if (loadedAssetPath == path && decoded != null) {
                         atlasBitmap = decoded
-                        designLayers = ProVideoFrameCache.getCachedDesignLayers(path)
+                        if (!preferCompactDecode) {
+                            designLayers = ProVideoFrameCache.getCachedDesignLayers(path)
+                        }
                         invalidate()
                     }
                 }
@@ -1460,7 +1500,7 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
         super.onDraw(canvas)
         if (alpha <= 0.001f) return
         val path = loadedAssetPath ?: return
-        val bmp = atlasBitmap ?: ProVideoFrameCache.getCachedAtlas(path)?.also {
+        val bmp = atlasBitmap ?: ProVideoFrameCache.getCachedAtlas(path, preferCompact = preferCompactDecode)?.also {
             atlasBitmap = it
         } ?: return
 
@@ -1471,7 +1511,7 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
         }
 
         val item = loadedItem ?: ProVideoFolder.findItem(path).also { loadedItem = it }
-        val isGridAtlas = item?.isAtlasGrid ?: (bmp.width >= 960 && bmp.height >= 960)
+        val isGridAtlas = item?.isAtlasGrid ?: (bmp.width >= 480 && item == null)
 
         if (isGridAtlas) {
             drawMultiFrameVideoAtlas(canvas, bmp)
@@ -1491,7 +1531,6 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
         val row = frameIdx / ProVideoFrameCache.ATLAS_COLS
         srcRect.set(col * cellW, row * cellH, (col + 1) * cellW, (row + 1) * cellH)
 
-        // Native Super HD crisp video frame: pristine 1:1 render with zero ghosting blur
         basePaint.alpha = 255
         canvas.drawBitmap(bmp, srcRect, dstRect, basePaint)
     }
@@ -1503,12 +1542,15 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
         cy: Float,
         angleDeg: Float,
         scaleX: Float,
-        scaleY: Float,
-        bloomAlpha: Int
+        scaleY: Float
     ) {
         canvas.save()
-        canvas.rotate(angleDeg, cx, cy)
-        canvas.scale(scaleX, scaleY, cx, cy)
+        if (angleDeg != 0f) {
+            canvas.rotate(angleDeg, cx, cy)
+        }
+        if (scaleX != 1f || scaleY != 1f) {
+            canvas.scale(scaleX, scaleY, cx, cy)
+        }
         fullBmpSrcRect.set(0, 0, bmp.width, bmp.height)
         basePaint.alpha = 255
         canvas.drawBitmap(bmp, fullBmpSrcRect, dstRect, basePaint)
@@ -1517,27 +1559,38 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
 
     private fun drawRingLayer(
         canvas: Canvas,
-        ringBmp: Bitmap?,
-        fallbackBmp: Bitmap,
-        @Suppress("UNUSED_PARAMETER") clipPath: android.graphics.Path,
+        ringBmp: Bitmap,
         cx: Float,
         cy: Float,
         angleDeg: Float,
         scaleX: Float,
-        scaleY: Float,
-        bloomAlpha: Int
+        scaleY: Float
     ) {
-        val targetBmp = ringBmp ?: fallbackBmp
         canvas.save()
-        canvas.rotate(angleDeg, cx, cy)
-        canvas.scale(scaleX, scaleY, cx, cy)
-        fullBmpSrcRect.set(0, 0, targetBmp.width, targetBmp.height)
+        if (angleDeg != 0f) {
+            canvas.rotate(angleDeg, cx, cy)
+        }
+        if (scaleX != 1f || scaleY != 1f) {
+            canvas.scale(scaleX, scaleY, cx, cy)
+        }
+        fullBmpSrcRect.set(0, 0, ringBmp.width, ringBmp.height)
         basePaint.alpha = 255
-        canvas.drawBitmap(targetBmp, fullBmpSrcRect, dstRect, basePaint)
+        canvas.drawBitmap(ringBmp, fullBmpSrcRect, dstRect, basePaint)
         canvas.restore()
     }
 
     private fun drawLiveRealDesign(canvas: Canvas, bmp: Bitmap, item: ProVideoItem?) {
+        val cx = dstRect.centerX()
+        val cy = dstRect.centerY()
+        val t = elapsedAnimSeconds
+
+        // Fast single-draw path for static gallery thumbnails or when pre-sliced layers are not yet ready:
+        // avoids 3x full-quad overdraw and keeps scrolling at a locked 60/120fps.
+        if (!isPlaying || preferCompactDecode) {
+            drawIntactWholeDesign(canvas, bmp, cx, cy, 0f, 1f, 1f)
+            return
+        }
+
         val path = loadedAssetPath
         var layers = designLayers
         if ((layers == null || layers.isRecycled) && path != null) {
@@ -1545,63 +1598,34 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
             designLayers = layers
         }
 
-        val cx = dstRect.centerX()
-        val cy = dstRect.centerY()
+        val useLayers = layers?.takeIf { !it.isRecycled }
         val radius = dstRect.width() * 0.5f
-        val t = elapsedAnimSeconds
         val idxSeed = (item?.index ?: 1) * 0.37f
         val profile = item?.motionProfile ?: ProMotionProfile.HUD_RETICLE_CROSSHAIRS
-        val accentColor = ((item?.accentHex ?: 0xFF00E5FFL).toInt()) or -0x1000000
-        val useLayers = layers?.takeIf { !it.isRecycled }
         val dir = if ((item?.index ?: 0) % 2 == 0) 1f else -1f
+
+        // If multi-ring layers haven't finished pre-slicing on the background thread yet,
+        // smoothly rotate the whole intact bitmap in a single pass instead of drawing 3 unclipped copies.
+        if (useLayers == null) {
+            val mainAng = (t * 48f * dir) % 360f
+            val breath = 1.0f + 0.025f * sin(t * 3.2f + idxSeed)
+            drawIntactWholeDesign(canvas, bmp, cx, cy, mainAng, breath, breath)
+            return
+        }
 
         when (profile) {
             ProMotionProfile.SPEEDOMETER_HUD -> {
                 val wingSway = sin(t * 2.3f) * 8.0f
                 val wingScale = 1.0f + 0.02f * cos(t * 2.8f)
-
-                drawRingLayer(
-                    canvas = canvas,
-                    ringBmp = useLayers?.outerRing,
-                    fallbackBmp = bmp,
-                    clipPath = speedoOuterClipPath,
-                    cx = cx,
-                    cy = cy,
-                    angleDeg = wingSway,
-                    scaleX = wingScale,
-                    scaleY = wingScale,
-                    bloomAlpha = 48
-                )
+                drawRingLayer(canvas, useLayers.outerRing, cx, cy, wingSway, wingScale, wingScale)
 
                 val plasmaAngle = (t * 88f) % 360f
                 val plasmaPulse = 1.0f + 0.025f * sin(t * 4.5f)
-                drawRingLayer(
-                    canvas = canvas,
-                    ringBmp = useLayers?.midRing,
-                    fallbackBmp = bmp,
-                    clipPath = speedoMidClipPath,
-                    cx = cx,
-                    cy = cy,
-                    angleDeg = plasmaAngle,
-                    scaleX = plasmaPulse,
-                    scaleY = plasmaPulse,
-                    bloomAlpha = 88
-                )
+                drawRingLayer(canvas, useLayers.midRing, cx, cy, plasmaAngle, plasmaPulse, plasmaPulse)
 
                 val dialTilt = sin(t * 1.9f) * 2.0f
                 val dialBreath = 1.0f + 0.012f * sin(t * 3.6f)
-                drawRingLayer(
-                    canvas = canvas,
-                    ringBmp = useLayers?.innerCore,
-                    fallbackBmp = bmp,
-                    clipPath = speedoInnerClipPath,
-                    cx = cx,
-                    cy = cy,
-                    angleDeg = dialTilt,
-                    scaleX = dialBreath,
-                    scaleY = dialBreath,
-                    bloomAlpha = 52
-                )
+                drawRingLayer(canvas, useLayers.innerCore, cx, cy, dialTilt, dialBreath, dialBreath)
 
                 val revWave = 0.5f + 0.5f * sin(t * 2.5f + sin(t * 1.3f) * 0.6f)
                 val needleDeg = 145f + revWave * 245f
@@ -1609,96 +1633,73 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
                 val nLen = radius * 0.42f
                 val nx = cx + cos(needleRad).toFloat() * nLen
                 val ny = cy + sin(needleRad).toFloat() * nLen
-                needlePaint.color = Color.argb(135, 255, 20, 100)
-                needlePaint.strokeWidth = (radius * 0.045f).coerceAtLeast(3f)
-                canvas.drawLine(cx, cy, nx, ny, needlePaint)
-                needlePaint.color = Color.argb(235, 255, 210, 235)
-                needlePaint.strokeWidth = (radius * 0.018f).coerceAtLeast(1.5f)
+                needlePaint.color = Color.argb(235, 255, 60, 140)
+                needlePaint.strokeWidth = (radius * 0.024f).coerceAtLeast(2f)
                 canvas.drawLine(cx, cy, nx, ny, needlePaint)
             }
 
-            // 1-Layer Intact Continuous Designs: never slice across lightning bolts, wave ribbons, star contours or particle arcs
             ProMotionProfile.ELECTRIC_PLASMA_LIGHTNING -> {
                 val mainAng = (t * 58f * dir + sin(t * 3.8f + idxSeed) * 6f) % 360f
                 val pulseScale = 1.0f + 0.032f * sin(t * 5.4f + idxSeed)
-                val surgeFlicker = 0.5f + 0.5f * sin(t * 14.0f + idxSeed) * cos(t * 9.5f)
-                val bloomAlpha = (48f + 68f * surgeFlicker).toInt()
-                drawIntactWholeDesign(canvas, bmp, cx, cy, mainAng, pulseScale, pulseScale, bloomAlpha)
+                drawIntactWholeDesign(canvas, bmp, cx, cy, mainAng, pulseScale, pulseScale)
             }
 
             ProMotionProfile.CONTINUOUS_WAVE_TORUS -> {
                 val mainAng = (t * 48f * dir) % 360f
                 val sx = 1.0f + 0.028f * sin(t * 2.8f + idxSeed)
                 val sy = 1.0f + 0.028f * cos(t * 2.8f + idxSeed)
-                val bloomAlpha = (45f + 45f * (0.5f + 0.5f * sin(t * 4.0f + idxSeed))).toInt()
-                drawIntactWholeDesign(canvas, bmp, cx, cy, mainAng, sx, sy, bloomAlpha)
+                drawIntactWholeDesign(canvas, bmp, cx, cy, mainAng, sx, sy)
             }
 
             ProMotionProfile.ORBITAL_STARFIELD_RING -> {
                 val mainAng = (t * 38f * dir) % 360f
                 val breath = 1.0f + 0.024f * sin(t * 3.1f + idxSeed)
-                val twinkle = 0.5f + 0.5f * sin(t * 6.2f + idxSeed)
-                val bloomAlpha = (42f + 52f * twinkle).toInt()
-                drawIntactWholeDesign(canvas, bmp, cx, cy, mainAng, breath, breath, bloomAlpha)
+                drawIntactWholeDesign(canvas, bmp, cx, cy, mainAng, breath, breath)
             }
 
             ProMotionProfile.STAR_WAVE_CONTOUR -> {
                 val mainAng = (t * 42f * dir + sin(t * 1.8f + idxSeed) * 8f) % 360f
                 val starBreath = 1.0f + 0.030f * sin(t * 3.4f + idxSeed)
-                val bloomAlpha = (48f + 42f * (0.5f + 0.5f * cos(t * 3.8f + idxSeed))).toInt()
-                drawIntactWholeDesign(canvas, bmp, cx, cy, mainAng, starBreath, starBreath, bloomAlpha)
+                drawIntactWholeDesign(canvas, bmp, cx, cy, mainAng, starBreath, starBreath)
             }
 
-            // 2-Layer Natural-Gap Designs: split strictly at the natural empty radial gap
             ProMotionProfile.SPIROGRAPH_BRAID_TORUS -> {
                 val outerAng = (t * 44f * dir) % 360f
                 val innerAng = (t * -72f * dir) % 360f
                 val outerScale = 1.0f + 0.022f * sin(t * 2.9f + idxSeed)
                 val innerScale = 1.0f + 0.035f * cos(t * 3.7f + idxSeed)
-                val bloom = (46f + 38f * (0.5f + 0.5f * sin(t * 3.6f + idxSeed))).toInt()
-
-                drawRingLayer(canvas, useLayers?.outerRing, bmp, spiroOuterClipPath, cx, cy, outerAng, outerScale, outerScale, bloom)
-                drawRingLayer(canvas, useLayers?.innerCore, bmp, spiroInnerClipPath, cx, cy, innerAng, innerScale, innerScale, bloom)
+                drawRingLayer(canvas, useLayers.outerRing, cx, cy, outerAng, outerScale, outerScale)
+                drawRingLayer(canvas, useLayers.innerCore, cx, cy, innerAng, innerScale, innerScale)
             }
 
             ProMotionProfile.POLYGON_APERTURE_IRIS -> {
-                // Entire nested polygon aperture (0..0.62) rotates intact as one geometric iris; outer dot ring counter-rotates
                 val outerDotsAng = (t * -34f * dir) % 360f
                 val irisAng = (t * 52f * dir + sin(t * 2.0f + idxSeed) * 10f) % 360f
                 val outerScale = 1.0f + 0.018f * cos(t * 2.4f + idxSeed)
                 val irisScale = 1.0f + 0.034f * sin(t * 3.5f + idxSeed)
-                val bloom = (48f + 38f * (0.5f + 0.5f * sin(t * 3.8f + idxSeed))).toInt()
-
-                drawRingLayer(canvas, useLayers?.outerRing, bmp, polyOuterClipPath, cx, cy, outerDotsAng, outerScale, outerScale, bloom)
-                drawRingLayer(canvas, useLayers?.innerCore, bmp, polyInnerClipPath, cx, cy, irisAng, irisScale, irisScale, bloom)
+                drawRingLayer(canvas, useLayers.outerRing, cx, cy, outerDotsAng, outerScale, outerScale)
+                drawRingLayer(canvas, useLayers.innerCore, cx, cy, irisAng, irisScale, irisScale)
             }
 
             ProMotionProfile.EQUALIZER_WAVEFORM_HUD -> {
-                // Outer radial equalizer sunburst (0.40..1.0) spins & pulses; center horizontal sine wave (0..0.40) stays upright!
                 val eqSunburstAng = (t * 50f * dir) % 360f
                 val eqBeatScale = 1.0f + 0.032f * sin(t * 5.6f + idxSeed)
                 val waveTilt = sin(t * 2.2f + idxSeed) * 3.5f
                 val waveSx = 1.0f + 0.015f * cos(t * 4.2f + idxSeed)
                 val waveSy = 1.0f + 0.062f * sin(t * 6.8f + idxSeed)
-                val bloom = (50f + 42f * (0.5f + 0.5f * sin(t * 5.6f + idxSeed))).toInt()
-
-                drawRingLayer(canvas, useLayers?.outerRing, bmp, eqOuterClipPath, cx, cy, eqSunburstAng, eqBeatScale, eqBeatScale, bloom)
-                drawRingLayer(canvas, useLayers?.innerCore, bmp, eqInnerClipPath, cx, cy, waveTilt, waveSx, waveSy, bloom)
+                drawRingLayer(canvas, useLayers.outerRing, cx, cy, eqSunburstAng, eqBeatScale, eqBeatScale)
+                drawRingLayer(canvas, useLayers.innerCore, cx, cy, waveTilt, waveSx, waveSy)
             }
 
             ProMotionProfile.BRAIDED_LATTICE_DOTS -> {
-                // Inner braided wave lattice (0..0.81) rotates intact; dual outer stipple dot rings (0.81..1.0) counter-rotate
                 val outerDotsAng = (t * -38f * dir) % 360f
                 val latticeAng = (t * 54f * dir) % 360f
                 val outerScale = 1.0f + 0.020f * cos(t * 2.6f + idxSeed)
                 val latticeScale = 1.0f + 0.028f * sin(t * 3.3f + idxSeed)
-                val bloom = (52f + 40f * (0.5f + 0.5f * sin(t * 3.9f + idxSeed))).toInt()
-
-                drawRingLayer(canvas, useLayers?.outerRing, bmp, latticeOuterClipPath, cx, cy, outerDotsAng, outerScale, outerScale, bloom)
-                drawRingLayer(canvas, useLayers?.innerCore, bmp, latticeInnerClipPath, cx, cy, latticeAng, latticeScale, latticeScale, bloom)
+                drawRingLayer(canvas, useLayers.outerRing, cx, cy, outerDotsAng, outerScale, outerScale)
+                drawRingLayer(canvas, useLayers.innerCore, cx, cy, latticeAng, latticeScale, latticeScale)
             }
 
-            // 3-Layer Natural-Gap HUD & PCB Designs: counter-rotate cleanly along their two natural empty radial gaps
             ProMotionProfile.CYBER_PCB_CIRCUIT -> {
                 val outerAng = (t * 32f * dir) % 360f
                 val midAng = (t * -56f * dir) % 360f
@@ -1706,11 +1707,9 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
                 val outerScale = 1.0f + 0.018f * sin(t * 2.3f + idxSeed)
                 val midScale = 1.0f + 0.026f * cos(t * 3.1f + idxSeed)
                 val innerScale = 1.0f + 0.034f * sin(t * 4.0f + idxSeed)
-                val bloom = (48f + 38f * (0.5f + 0.5f * sin(t * 4.2f + idxSeed))).toInt()
-
-                drawRingLayer(canvas, useLayers?.outerRing, bmp, pcbOuterClipPath, cx, cy, outerAng, outerScale, outerScale, bloom)
-                drawRingLayer(canvas, useLayers?.midRing, bmp, pcbMidClipPath, cx, cy, midAng, midScale, midScale, bloom)
-                drawRingLayer(canvas, useLayers?.innerCore, bmp, pcbInnerClipPath, cx, cy, innerAng, innerScale, innerScale, bloom)
+                drawRingLayer(canvas, useLayers.outerRing, cx, cy, outerAng, outerScale, outerScale)
+                drawRingLayer(canvas, useLayers.midRing, cx, cy, midAng, midScale, midScale)
+                drawRingLayer(canvas, useLayers.innerCore, cx, cy, innerAng, innerScale, innerScale)
             }
 
             ProMotionProfile.HUD_RETICLE_CROSSHAIRS,
@@ -1721,25 +1720,10 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
                 val outerScale = 1.0f + 0.020f * sin(t * 2.2f + idxSeed)
                 val midScale = 1.0f + 0.028f * cos(t * 2.9f + idxSeed)
                 val innerScale = 1.0f + 0.036f * sin(t * 3.7f + idxSeed)
-                val bloom = (46f + 36f * (0.5f + 0.5f * sin(t * 3.6f + idxSeed))).toInt()
-
-                drawRingLayer(canvas, useLayers?.outerRing, bmp, hudOuterClipPath, cx, cy, outerAng, outerScale, outerScale, bloom)
-                drawRingLayer(canvas, useLayers?.midRing, bmp, hudMidClipPath, cx, cy, midAng, midScale, midScale, bloom)
-                drawRingLayer(canvas, useLayers?.innerCore, bmp, hudInnerClipPath, cx, cy, innerAng, innerScale, innerScale, bloom)
+                drawRingLayer(canvas, useLayers.outerRing, cx, cy, outerAng, outerScale, outerScale)
+                drawRingLayer(canvas, useLayers.midRing, cx, cy, midAng, midScale, midScale)
+                drawRingLayer(canvas, useLayers.innerCore, cx, cy, innerAng, innerScale, innerScale)
             }
-        }
-
-        // Subtle biometric optical ripple synced to the animation phase
-        val wavePhase = (t * 0.65f + idxSeed) % 1.0f
-        val waveRadius = radius * (0.18f + wavePhase * 0.76f)
-        val waveAlpha = ((1f - wavePhase) * (1f - wavePhase) * 75f).toInt().coerceIn(0, 75)
-        if (waveAlpha > 4) {
-            val r = (accentColor shr 16) and 0xFF
-            val g = (accentColor shr 8) and 0xFF
-            val b = accentColor and 0xFF
-            additiveFxPaint.color = Color.argb(waveAlpha, r, g, b)
-            additiveFxPaint.strokeWidth = (radius * 0.016f * (1f - wavePhase * 0.5f)).coerceAtLeast(1.2f)
-            canvas.drawCircle(cx, cy, waveRadius, additiveFxPaint)
         }
     }
 

@@ -6,23 +6,61 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Centralized signatures and event-driven GateState for inferring when the OS (itel OS / SystemUI)
- * is actively requesting fingerprint verification on an unrooted itel S25.
+ * Single source of truth for all biometric packages, class names, view resource IDs,
+ * prompt strings, mismatch strings, logcat patterns, and timeout constants on the itel S25.
  *
- * Edit the lists below once you capture exact class names, view IDs, or localized strings
- * from DEBUG Diagnostic Mode on your device.
+ * Update the lists below with exact values captured by the "Record scenario (15s)" tool
+ * in StockAnimationInspectorScreen.
  */
 object BiometricSignatures {
 
-    /**
-     * Hard fail-safe maximum duration (in milliseconds) that the animation overlay is allowed
-     * to remain visible during a single finger-down session if no end signal arrives.
-     */
-    const val MAX_OVERLAY_DURATION_MS: Long = 3_000L
+    const val LOG_TAG = "FPAnim"
 
     /**
-     * Packages allowed to emit biometric prompt, UDFPS/FOD overlay, or AppLock verification events.
-     * Normal third-party apps invoking BiometricPrompt delegate the actual dialog to `com.android.systemui`.
+     * Hard maximum duration (5 seconds) that the overlay may stay visible during a single touch.
+     * Even if the finger remains down and no end signal arrives, the overlay hides at 5,000 ms
+     * and latches until the finger lifts.
+     */
+    const val HARD_MAX_OVERLAY_DURATION_MS: Long = 5_000L
+
+    /**
+     * Errors/mismatches may latch ONLY if the finger is currently down or went down within
+     * the last 1,500 ms. Stray error texts/logs outside this window are ignored.
+     */
+    const val ERROR_LATCH_RECENT_TOUCH_WINDOW_MS: Long = 1_500L
+
+    /**
+     * Stale-state watchdog timeout for unlocked biometric prompts if no window/log update arrives.
+     */
+    const val STALE_PROMPT_WATCHDOG_MS: Long = 15_000L
+
+    /**
+     * Logcat tags monitored by TouchUserService on AOSP + itel OS / Transsion Android 12–15.
+     */
+    val LOGCAT_BIOMETRIC_TAGS: Array<String> = arrayOf(
+        "FingerprintService:V",
+        "Fingerprint21:V",
+        "FingerprintProvider:V",
+        "BiometricService:V",
+        "BiometricScheduler:V",
+        "AuthenticationClient:V",
+        "AcquisitionClient:V",
+        "KeyguardUpdateMonitor:V",
+        "KeyguardBiometricLockoutLogger:V",
+        "AuthController:V",
+        "UdfpsController:V",
+        "UdfpsControllerOverlay:V",
+        "FodController:V",
+        "FingerprintHal:V",
+        "BiometricPrompt:V",
+        "FingerprintManager:V",
+        "*:S"
+    )
+
+    /**
+     * Packages allowed to emit accessibility events for biometric prompts, UDFPS overlays, or AppLock.
+     * Normal third-party apps never get their text inspected here, preventing stray "try again" texts
+     * in arbitrary apps from ever latching an error.
      */
     val SYSTEM_BIOMETRIC_PACKAGES: Set<String> = setOf(
         "com.android.systemui",
@@ -33,13 +71,9 @@ object BiometricSignatures {
         "com.transsion.fingerprint",
         "com.transsion.phonemaster",
         "com.itel.systemui",
-        "com.itel.security",
-        "com.rlk.weathers"
+        "com.itel.security"
     )
 
-    /**
-     * Prefixes for OEM system packages on itel / Transsion ROMs.
-     */
     val SYSTEM_PACKAGE_PREFIXES: List<String> = listOf(
         "com.android.systemui",
         "com.transsion.",
@@ -47,8 +81,8 @@ object BiometricSignatures {
     )
 
     /**
-     * 1st Priority: Class name substrings identifying a BiometricPrompt, UDFPS/FOD sensor request,
-     * Settings fingerprint enrollment/confirmation, or Transsion AppLock fingerprint screen.
+     * Priority 1 (Class Names): Substrings of SystemUI / Settings / Transsion classes that host
+     * an active unlocked-screen biometric verification request.
      */
     val PROMPT_CLASS_KEYWORDS: List<String> = listOf(
         "biometricprompt",
@@ -56,9 +90,9 @@ object BiometricSignatures {
         "authbiometric",
         "biometricview",
         "fingerprintdialog",
-        "udfps",
+        "udfpscontrolleroverlay",
+        "udfpsview",
         "fodview",
-        "fodicon",
         "confirmdevicecredential",
         "fingerprintenroll",
         "fingerprintsettings",
@@ -67,15 +101,13 @@ object BiometricSignatures {
     )
 
     /**
-     * 1st Priority (View IDs): Resource ID entry substrings inside SystemUI or Settings
-     * that only appear when a biometric prompt or in-display fingerprint sensor icon is active.
+     * Priority 2 (View Resource IDs): Substrings of view IDs inside SystemUI / Settings / AppLock
+     * that appear when a biometric prompt is active.
      */
     val PROMPT_VIEW_ID_KEYWORDS: List<String> = listOf(
         "biometric_icon",
         "fingerprint_icon",
         "udfps_view",
-        "udfps_aod_fp",
-        "udfps_lockscreen_fp",
         "fod_view",
         "fod_icon",
         "auth_credential",
@@ -83,8 +115,7 @@ object BiometricSignatures {
     )
 
     /**
-     * 2nd Priority (Texts): Lowercase substrings indicating the OS is actively asking the user
-     * to touch/scan the fingerprint sensor on an unlocked screen or prompt dialog.
+     * Priority 3 (Prompt Texts): Lowercase substrings indicating the OS is asking for a fingerprint.
      */
     val PROMPT_TEXT_KEYWORDS: List<String> = listOf(
         "touch the fingerprint sensor",
@@ -97,15 +128,12 @@ object BiometricSignatures {
         "place your finger",
         "confirm with fingerprint",
         "touch sensor",
-        "fingerprint to unlock",
         "unlock with fingerprint",
         "authenticate with fingerprint"
     )
 
     /**
-     * Lowercase substrings indicating a fingerprint mismatch / "not recognized" / acquisition error.
-     * Matching any of these immediately sets `latchedTerminal = true` and hides the overlay
-     * until the user lifts their finger (`fingerDown = false`).
+     * Lowercase substrings in SystemUI / Settings events indicating a fingerprint mismatch or bad scan.
      */
     val MISMATCH_ERROR_KEYWORDS: List<String> = listOf(
         "not recognized",
@@ -121,19 +149,15 @@ object BiometricSignatures {
         "clean the sensor",
         "too fast",
         "finger moved",
-        "move Finger",
         "wrong fingerprint",
         "authentication failed",
         "couldn't verify",
-        "unable to process",
         "press firmer",
         "cover the entire sensor"
     )
 
     /**
-     * Lowercase substrings indicating the lock screen or biometric prompt is in a state where
-     * fingerprint authentication is NOT accepted (first unlock after reboot, biometric lockout
-     * after too many failed attempts, or PIN/Pattern/Password-only bouncer).
+     * Lowercase substrings indicating the lock screen or prompt is in PIN-only / lockout / post-reboot mode.
      */
     val LOCKOUT_OR_PIN_ONLY_KEYWORDS: List<String> = listOf(
         "too many attempts",
@@ -155,14 +179,65 @@ object BiometricSignatures {
     )
 
     /**
-     * Lowercase substrings indicating the user dismissed/cancelled the biometric prompt
-     * or switched to negative button ("Use PIN", "Use password", "Cancel").
+     * Lowercase substrings indicating the biometric prompt was cancelled or dismissed.
      */
     val PROMPT_DISMISS_OR_FALLBACK_KEYWORDS: List<String> = listOf(
         "authentication canceled",
         "authentication cancelled",
         "user canceled",
         "biometric error"
+    )
+
+    /**
+     * Logcat lowercase substrings (used in TouchUserService) indicating a fingerprint mismatch / failed scan.
+     */
+    val LOGCAT_MISMATCH_SUBSTRINGS: List<String> = listOf(
+        "onauthenticationfailed",
+        "onauthenticated(false)",
+        "authenticated=false",
+        "authenticated: false",
+        "authenticated(false)",
+        "auth_failed",
+        "handleauthenticated(false)",
+        "onfingerprintauthenticated(false)",
+        "handlefingerprintauthfailed",
+        "onbiometricauthfailed",
+        "fingerprint_acquired_partial",
+        "fingerprint_acquired_insufficient",
+        "fingerprint_acquired_imager_dirty",
+        "fingerprint_acquired_too_fast",
+        "fingerprint_acquired_too_slow",
+        "not recognized",
+        "mismatch"
+    )
+
+    /**
+     * Logcat lowercase substrings (used in TouchUserService) indicating an unlocked biometric prompt started.
+     */
+    val LOGCAT_PROMPT_START_SUBSTRINGS: List<String> = listOf(
+        "showauthenticationdialog",
+        "authcontainerview",
+        "startauthentication",
+        "prepareforauthentication",
+        "starting authentication",
+        "showudfpsoverlay"
+    )
+
+    /**
+     * Logcat lowercase substrings (used in TouchUserService) indicating a biometric prompt ended/succeeded/cancelled.
+     */
+    val LOGCAT_PROMPT_STOP_SUBSTRINGS: List<String> = listOf(
+        "stopauthentication",
+        "cancelauthentication",
+        "dismissauthenticationdialog",
+        "hideudfps",
+        "onauthenticationsucceeded",
+        "onauthenticated(true)",
+        "authenticated=true",
+        "authenticated: true",
+        "ondismissed",
+        "finishing client",
+        "client stopped"
     )
 
     fun isBiometricPackage(pkgName: String): Boolean {
@@ -210,29 +285,35 @@ object BiometricSignatures {
 }
 
 /**
- * Single event-driven state holder governing overlay visibility:
- *   `visible = fingerDown && requestActive && !latchedTerminal`
+ * Sole owner of `isBiometricPromptActive`, `fingerDown`, and `latchedTerminal`.
+ * No other class in the project can mutate `isBiometricPromptActive`.
  *
- * Rules enforced:
- * 1. Animation shows ONLY IF (`fingerDown` && `requestActive` && `!latchedTerminal`).
- * 2. When a terminal event occurs (unlock success, mismatch error, cancel, lockout, or 3s fail-safe),
- *    `latchedTerminal` is set to `true` and stays `true` as long as `fingerDown` remains `true`.
- * 3. `latchedTerminal` is cleared ONLY when `fingerDown` transitions to `false` (finger lifts).
+ * Visibility invariant:
+ *   `visible = fingerDown && requestActive && !latchedTerminal`
+ * where:
+ *   `requestActive = if (onLockOrAod) (!lockScreenRestrictedPinOnly) else isBiometricPromptActive`
  */
-class BiometricGateState {
+class BiometricRequestTracker {
+
     var fingerDown: Boolean = false
         private set
 
-    var lockScreenRequestActive: Boolean = false
+    var lastFingerDownAtMs: Long = 0L
         private set
 
-    var unlockedPromptRequestActive: Boolean = false
+    var onLockOrAod: Boolean = false
         private set
 
     var lockScreenRestrictedPinOnly: Boolean = false
         private set
 
-    var onLockOrAod: Boolean = false
+    var isBiometricPromptActive: Boolean = false
+        private set
+
+    var activePromptSource: String = "none"
+        private set
+
+    var activePromptWindowId: Int = -1
         private set
 
     var latchedTerminal: Boolean = false
@@ -241,77 +322,214 @@ class BiometricGateState {
     var lastTerminalReason: String = "none"
         private set
 
+    var lastDecisionReason: String = "Idle"
+        private set
+
     val requestActive: Boolean
         get() = if (onLockOrAod) {
-            lockScreenRequestActive && !lockScreenRestrictedPinOnly
+            !lockScreenRestrictedPinOnly
         } else {
-            unlockedPromptRequestActive
+            isBiometricPromptActive
         }
 
     val visible: Boolean
         get() = fingerDown && requestActive && !latchedTerminal
 
-    fun onFingerDown(): Boolean {
+    /**
+     * Updates whether the device is currently on the lock screen / AOD.
+     */
+    fun syncLockState(isLockOrAodNow: Boolean) {
+        if (onLockOrAod != isLockOrAodNow) {
+            onLockOrAod = isLockOrAodNow
+            if (isLockOrAodNow) {
+                // While on lock screen, clear any unlocked prompt state so it cannot leak after unlock
+                isBiometricPromptActive = false
+                activePromptSource = "none"
+                activePromptWindowId = -1
+            }
+        }
+    }
+
+    /**
+     * Records finger-down inside the calibrated inner sensor circle.
+     */
+    fun onFingerDown(isLockOrAodNow: Boolean, nowMs: Long = System.currentTimeMillis()): Boolean {
+        syncLockState(isLockOrAodNow)
+        if (!fingerDown) {
+            // A fresh touch after the finger was up always starts with latchedTerminal = false
+            latchedTerminal = false
+            lastTerminalReason = "none"
+        }
         fingerDown = true
+        lastFingerDownAtMs = nowMs
+
+        lastDecisionReason = when {
+            latchedTerminal -> "Blocked: terminal latched ($lastTerminalReason) while finger held down"
+            onLockOrAod && lockScreenRestrictedPinOnly -> "Blocked: lock screen restricted (PIN-only / lockout)"
+            onLockOrAod -> "Show: lock screen finger down"
+            isBiometricPromptActive -> "Show: unlocked biometric prompt active ($activePromptSource)"
+            else -> "Blocked: unlocked, no biometric request"
+        }
         return visible
     }
 
+    /**
+     * Records finger lift outside/off the sensor circle.
+     * Clears `fingerDown` and resets `latchedTerminal`.
+     */
     fun onFingerUp(): Boolean {
+        val wasVisible = visible
         fingerDown = false
         latchedTerminal = false
         lastTerminalReason = "none"
+        if (wasVisible) {
+            lastDecisionReason = "Hide: finger lifted"
+        }
+        return false
+    }
+
+    /**
+     * Called when explicit start evidence arrives for an unlocked biometric prompt
+     * (from SystemUI / Transsion / Settings accessibility event or TouchUserService logcat).
+     */
+    fun onPromptStarted(source: String, windowId: Int = -1, isLockOrAodNow: Boolean = onLockOrAod): Boolean {
+        syncLockState(isLockOrAodNow)
+        if (onLockOrAod) {
+            // Lock screen uses onLockOrAod directly; do not set unlocked prompt active on lock screen
+            return visible
+        }
+        isBiometricPromptActive = true
+        activePromptSource = source
+        if (windowId > 0) {
+            activePromptWindowId = windowId
+        }
+        if (fingerDown && !latchedTerminal) {
+            lastDecisionReason = "Show: unlocked biometric prompt active ($source)"
+        }
         return visible
     }
 
-    fun updateEnvironment(
-        isLockOrAod: Boolean,
-        canAcceptLockScreenFp: Boolean,
-        isUnlockedPromptActive: Boolean,
-        isLockScreenPinOnly: Boolean = lockScreenRestrictedPinOnly
-    ): Boolean {
-        onLockOrAod = isLockOrAod
-        lockScreenRequestActive = isLockOrAod && canAcceptLockScreenFp
-        unlockedPromptRequestActive = isUnlockedPromptActive
-        lockScreenRestrictedPinOnly = isLockScreenPinOnly
+    /**
+     * Called when explicit stop/cancel/dismiss/success evidence arrives for a biometric request,
+     * or when the stale-state watchdog confirms the prompt window is gone.
+     */
+    fun onPromptStopped(reason: String): Boolean {
+        val wasVisible = visible
+        isBiometricPromptActive = false
+        activePromptSource = "none"
+        activePromptWindowId = -1
+        if (fingerDown) {
+            latchedTerminal = true
+            lastTerminalReason = reason
+        }
+        if (wasVisible) {
+            lastDecisionReason = "Hide: biometric request ended ($reason)"
+        }
         return visible
     }
 
-    fun latchTerminal(reason: String): Boolean {
-        latchedTerminal = true
-        lastTerminalReason = reason
-        if (reason == "unlock_success" || reason == "prompt_dismissed" || reason == "screen_off") {
-            unlockedPromptRequestActive = false
+    /**
+     * Called on device unlock (`ACTION_USER_PRESENT`).
+     */
+    fun onDeviceUnlocked(): Boolean {
+        onLockOrAod = false
+        lockScreenRestrictedPinOnly = false
+        isBiometricPromptActive = false
+        activePromptSource = "none"
+        activePromptWindowId = -1
+        if (fingerDown) {
+            latchedTerminal = true
+            lastTerminalReason = "unlock_success"
         }
-        if (reason == "lockout_or_pin_only") {
-            lockScreenRestrictedPinOnly = true
+        lastDecisionReason = "Hide: unlocked (ACTION_USER_PRESENT)"
+        return false
+    }
+
+    /**
+     * Called on fingerprint mismatch / "not recognized" error.
+     * Enforces Section 4 requirement:
+     *   "Errors may latch only if the finger is currently down (or went down less than ~1.5 s ago);
+     *    ignore them otherwise."
+     * Returns true if the error was accepted and latched/applied, false if ignored as stray.
+     */
+    fun onMismatchError(source: String, nowMs: Long = System.currentTimeMillis()): Boolean {
+        val recentlyDown = lastFingerDownAtMs > 0L &&
+            (nowMs - lastFingerDownAtMs) <= BiometricSignatures.ERROR_LATCH_RECENT_TOUCH_WINDOW_MS
+        if (!fingerDown && !recentlyDown) {
+            lastDecisionReason = "Ignored stray error ($source): finger not down"
+            return false
         }
-        return visible
+        if (fingerDown) {
+            latchedTerminal = true
+            lastTerminalReason = "mismatch:$source"
+        }
+        lastDecisionReason = "Hide: mismatch error ($source)"
+        return true
+    }
+
+    /**
+     * Called when SystemUI / Keyguard displays lockout or PIN-only text ("Too many attempts", "After restart").
+     */
+    fun onLockoutOrPinOnly(source: String): Boolean {
+        lockScreenRestrictedPinOnly = true
+        isBiometricPromptActive = false
+        activePromptSource = "none"
+        activePromptWindowId = -1
+        if (fingerDown) {
+            latchedTerminal = true
+            lastTerminalReason = "lockout_or_pin_only"
+        }
+        lastDecisionReason = "Hide: lockout or PIN-only ($source)"
+        return false
     }
 
     fun clearLockScreenRestriction() {
         lockScreenRestrictedPinOnly = false
     }
 
-    fun resetAll(reason: String) {
-        fingerDown = false
-        lockScreenRequestActive = false
-        unlockedPromptRequestActive = false
-        latchedTerminal = false
-        lastTerminalReason = reason
+    /**
+     * Called when the hard maximum duration (5,000 ms) expires while the overlay is showing.
+     * Hides even with the finger down, and latches until the finger lifts.
+     */
+    fun onHardMaxDurationReached(): Boolean {
+        if (fingerDown) {
+            latchedTerminal = true
+            lastTerminalReason = "hard_max_duration_5s"
+        }
+        isBiometricPromptActive = false
+        activePromptSource = "none"
+        activePromptWindowId = -1
+        lastDecisionReason = "Hide: hard max duration (${BiometricSignatures.HARD_MAX_OVERLAY_DURATION_MS}ms) reached"
+        return false
+    }
+
+    /**
+     * Called on screen off (`ACTION_SCREEN_OFF`) or service stop/interrupt.
+     */
+    fun onScreenOffOrReset(reason: String): Boolean {
+        isBiometricPromptActive = false
+        activePromptSource = "none"
+        activePromptWindowId = -1
+        if (fingerDown) {
+            latchedTerminal = true
+            lastTerminalReason = reason
+        }
+        lastDecisionReason = "Hide: $reason"
+        return false
     }
 
     override fun toString(): String {
-        return "Gate[visible=$visible, fingerDown=$fingerDown, requestActive=$requestActive " +
-            "(lock=$lockScreenRequestActive, prompt=$unlockedPromptRequestActive, pinOnly=$lockScreenRestrictedPinOnly, onLock=$onLockOrAod), " +
-            "latchedTerminal=$latchedTerminal($lastTerminalReason)]"
+        return "Tracker[visible=$visible, fingerDown=$fingerDown, requestActive=$requestActive " +
+            "(onLock=$onLockOrAod, prompt=$isBiometricPromptActive[$activePromptSource,win=$activePromptWindowId], pinOnly=$lockScreenRestrictedPinOnly), " +
+            "latched=$latchedTerminal($lastTerminalReason), reason=\"$lastDecisionReason\"]"
     }
 }
 
+// Typealias for backward compatibility with existing tests
+typealias BiometricGateState = BiometricRequestTracker
+
 /**
- * Hidden, off-by-default DEBUG diagnostic logger.
- * When enabled, logs timestamped SystemUI accessibility events, window changes, keyguard/screen states,
- * touch zone triggers, and gate transitions to both Logcat (`tag = FPAnimDiag`) and an in-memory ring buffer
- * so the user can copy and paste logs without needing a PC.
+ * Diagnostic event ring buffer for the 15-second Scenario Recorder and DEBUG Diagnostic Mode.
  */
 object DiagnosticLogger {
     private const val TAG = "FPAnimDiag"
@@ -323,11 +541,11 @@ object DiagnosticLogger {
     private val buffer = ArrayDeque<String>(MAX_LINES)
     private val timeFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
 
-    fun log(category: String, message: String, gate: BiometricGateState? = null) {
+    fun log(category: String, message: String, tracker: BiometricRequestTracker? = null) {
         if (!enabled) return
         val ts = synchronized(timeFormat) { timeFormat.format(Date()) }
-        val gateSuffix = if (gate != null) " | $gate" else ""
-        val line = "$ts [$category] $message$gateSuffix"
+        val suffix = if (tracker != null) " | $tracker" else ""
+        val line = "$ts [$category] $message$suffix"
         Log.d(TAG, line)
         synchronized(buffer) {
             if (buffer.size >= MAX_LINES) {
@@ -337,13 +555,16 @@ object DiagnosticLogger {
         }
     }
 
+    fun dumpLines(maxLines: Int = 120): List<String> {
+        synchronized(buffer) {
+            return buffer.toList().takeLast(maxLines)
+        }
+    }
+
     fun dumpText(): String {
         synchronized(buffer) {
             if (buffer.isEmpty()) {
-                return "No diagnostic events recorded yet.\n" +
-                    "1. Enable DEBUG Diagnostic Mode above.\n" +
-                    "2. Perform the 4 fingerprint tests (lock screen match, lock screen mismatch, unlocked prompt, home screen touch).\n" +
-                    "3. Return here and tap Copy Logs."
+                return "(No accessibility/gate events recorded in buffer)"
             }
             return buffer.joinToString("\n")
         }

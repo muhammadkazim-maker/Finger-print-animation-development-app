@@ -123,7 +123,6 @@ fun CustomizationScreen(
                             },
                             update = { hostView ->
                                 hostView.setSpeed(speed)
-                                hostView.playImmediate()
                             },
                             modifier = Modifier.fillMaxSize()
                         )

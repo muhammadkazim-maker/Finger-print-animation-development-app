@@ -606,18 +606,20 @@ fun LoopingAssetVideoPreview(
     isCardSelected: Boolean = false,
     modifier: Modifier = Modifier
 ) {
+    val compact = !isCardSelected
     AndroidView(
         factory = { ctx ->
             LoopingAssetVideoView(ctx).apply {
-                preferCompactDecode = false
+                preferCompactDecode = compact
                 tag = assetPath
-                setVideoAsset(assetPath, autoStart = isCardSelected, speed = speed, preferCompact = false)
+                setVideoAsset(assetPath, autoStart = isCardSelected, speed = speed, preferCompact = compact)
             }
         },
         update = { videoView ->
+            videoView.preferCompactDecode = compact
             if (videoView.tag != assetPath) {
                 videoView.tag = assetPath
-                videoView.setVideoAsset(assetPath, autoStart = isCardSelected, speed = speed, preferCompact = false)
+                videoView.setVideoAsset(assetPath, autoStart = isCardSelected, speed = speed, preferCompact = compact)
             } else {
                 videoView.setPlaybackSpeed(speed)
                 if (isCardSelected) {
@@ -635,15 +637,22 @@ private fun applyProVideoItem(
     context: android.content.Context,
     item: ProVideoItem
 ) {
-    val fallbackDesign = AnimationCatalog.proVideoDesigns.find { it.id == item.fallbackLottieDesignId }
-        ?: AnimationCatalog.proVideoDesigns.first()
-    File(context.filesDir, "custom.json").writeText(fallbackDesign.lottieJson)
+    val appCtx = context.applicationContext ?: context
     val label = "Pro Folder • #${item.index} ${item.title}"
-    Prefs.setSelectedAnim(context, item.id, label)
-    Prefs.setSelectedVideoAsset(context, item.assetPath)
-    Prefs.setAnimStepDone(context, true)
-    ProVideoFrameCache.pinActiveOverlayAtlas(context, item.assetPath)
-    ProVideoFrameCache.prewarmAsync(context, item.assetPath, preferCompact = false)
-    LottiePrewarmCache.updateActiveAnimationAndPrewarm(context, fallbackDesign.lottieJson)
+    Prefs.setSelectedAnim(appCtx, item.id, label)
+    Prefs.setSelectedVideoAsset(appCtx, item.assetPath)
+    Prefs.setAnimStepDone(appCtx, true)
+    ProVideoFrameCache.pinActiveOverlayAtlas(appCtx, item.assetPath)
+    ProVideoFrameCache.prewarmAsync(appCtx, item.assetPath, preferCompact = false)
     FpAccessibilityService.instance?.reload()
+
+    // Write fallback custom.json on a background thread so UI never stutters on selection
+    Thread {
+        runCatching {
+            val fallbackDesign = AnimationCatalog.proVideoDesigns.find { it.id == item.fallbackLottieDesignId }
+                ?: AnimationCatalog.proVideoDesigns.first()
+            File(appCtx.filesDir, "custom.json").writeText(fallbackDesign.lottieJson)
+            LottiePrewarmCache.updateActiveAnimationAndPrewarm(appCtx, fallbackDesign.lottieJson)
+        }
+    }.start()
 }

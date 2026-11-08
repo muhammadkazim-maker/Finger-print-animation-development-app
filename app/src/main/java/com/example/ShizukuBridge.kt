@@ -11,14 +11,19 @@ import rikka.shizuku.Shizuku
 
 object ShizukuBridge {
     private const val TAG = "FPAnim"
-    private const val SERVICE_VERSION = 11
+    private const val SERVICE_VERSION = 12
 
     @Volatile var service: ITouchService? = null
     @Volatile var onTouch: ((Boolean) -> Unit)? = null
     @Volatile var onFingerprintError: (() -> Unit)? = null
     @Volatile var onBiometricPromptStateChanged: ((Boolean) -> Unit)? = null
     @Volatile private var lastInteractive: Boolean = true
+    @Volatile private var bindInFlight: Boolean = false
     private lateinit var app: Context
+
+    private val ipcExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "FPAnim-ShizukuIPC").apply { isDaemon = true }
+    }
 
     private val listener = object : ITouchListener.Stub() {
         override fun onZoneTouch(down: Boolean) {
@@ -39,25 +44,30 @@ object ShizukuBridge {
             Log.d(TAG, "TouchUserService connected: $n (v$SERVICE_VERSION)")
             val s = ITouchService.Stub.asInterface(b)
             service = s
+            bindInFlight = false
             runCatching {
                 b.linkToDeath({
                     Log.d(TAG, "TouchUserService binder died; scheduling rebind")
                     service = null
+                    bindInFlight = false
                     tryBind()
                 }, 0)
             }
-            applyZone()
-            runCatching { s.setScreenInteractive(lastInteractive) }
-            try {
-                s.start(listener)
-            } catch (e: Exception) {
-                Log.d(TAG, "Failed to start TouchUserService listener: ${e.message}")
+            ipcExecutor.execute {
+                applyZoneInternal(s)
+                runCatching { s.setScreenInteractive(lastInteractive) }
+                try {
+                    s.start(listener)
+                } catch (e: Exception) {
+                    Log.d(TAG, "Failed to start TouchUserService listener: ${e.message}")
+                }
             }
         }
 
         override fun onServiceDisconnected(n: ComponentName) {
             Log.d(TAG, "TouchUserService disconnected: $n")
             service = null
+            bindInFlight = false
             tryBind()
         }
     }
@@ -76,57 +86,78 @@ object ShizukuBridge {
 
     fun setScreenInteractive(interactive: Boolean) {
         lastInteractive = interactive
-        runCatching { service?.setScreenInteractive(interactive) }
+        val s = service ?: return
+        ipcExecutor.execute {
+            runCatching { s.setScreenInteractive(interactive) }
+        }
     }
 
     fun tryBind() {
         if (!::app.isInitialized) return
-        val alive = try {
-            Shizuku.pingBinder()
-        } catch (_: Exception) {
-            false
+        val current = service
+        if (current != null) {
+            val isAlive = try {
+                current.asBinder().isBinderAlive
+            } catch (_: Exception) {
+                false
+            }
+            if (isAlive) {
+                // Already bound and alive — fast no-op with zero main-thread Binder IPC!
+                return
+            }
+            service = null
         }
-        val currentBinderAlive = try {
-            service?.asBinder()?.isBinderAlive == true
-        } catch (_: Exception) {
-            false
-        }
-        if (currentBinderAlive) {
-            applyZone()
-            runCatching { service?.setScreenInteractive(lastInteractive) }
-            runCatching { service?.start(listener) }
-            return
-        }
-        service = null
-        if (!alive) return
+        if (bindInFlight) return
 
-        val granted = try {
-            Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
-        } catch (_: Exception) {
-            false
-        }
-        if (!granted) return
+        ipcExecutor.execute {
+            val alive = try {
+                Shizuku.pingBinder()
+            } catch (_: Exception) {
+                false
+            }
+            if (!alive) return@execute
 
+            val granted = try {
+                Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
+            } catch (_: Exception) {
+                false
+            }
+            if (!granted) return@execute
+
+            bindInFlight = true
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                try {
+                    val args = Shizuku.UserServiceArgs(
+                        ComponentName(app.packageName, TouchUserService::class.java.name)
+                    )
+                        .processNameSuffix("touch")
+                        .daemon(true)
+                        .version(SERVICE_VERSION)
+                    Shizuku.bindUserService(args, conn)
+                } catch (e: Exception) {
+                    bindInFlight = false
+                    Log.d(TAG, "bindUserService error: ${e.message}")
+                }
+            }
+        }
+    }
+
+    private fun applyZoneInternal(target: ITouchService?) {
+        if (!::app.isInitialized || target == null) return
+        val c = Prefs.load(app)
         try {
-            val args = Shizuku.UserServiceArgs(ComponentName(app.packageName, TouchUserService::class.java.name))
-                .processNameSuffix("touch")
-                .daemon(true)
-                .version(SERVICE_VERSION)
-            Shizuku.bindUserService(args, conn)
+            val radius = (c.sensorSize * 0.5f).coerceIn(0.02f, 0.18f)
+            target.setZone(c.cx, c.cy, radius)
         } catch (e: Exception) {
-            Log.d(TAG, "bindUserService error: ${e.message}")
+            Log.d(TAG, "applyZone error: ${e.message}")
         }
     }
 
     fun applyZone() {
         if (!::app.isInitialized) return
-        val c = Prefs.load(app)
-        try {
-            // Strictly match the inner physical sensor circle (sensorSize / 2f)
-            val radius = (c.sensorSize * 0.5f).coerceIn(0.02f, 0.18f)
-            service?.setZone(c.cx, c.cy, radius)
-        } catch (e: Exception) {
-            Log.d(TAG, "applyZone error: ${e.message}")
+        val s = service ?: return
+        ipcExecutor.execute {
+            applyZoneInternal(s)
         }
     }
 

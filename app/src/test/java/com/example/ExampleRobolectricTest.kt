@@ -252,41 +252,39 @@ class ExampleRobolectricTest {
 
     @Test
     fun `BiometricGateState enforces visible equals fingerDown and requestActive and not latchedTerminal`() {
-        val gate = BiometricGateState()
+        val tracker = BiometricRequestTracker()
 
         // 1. Unlocked screen with no active biometric prompt: touching sensor must NOT show overlay
-        gate.updateEnvironment(isLockOrAod = false, canAcceptLockScreenFp = false, isUnlockedPromptActive = false)
-        assertEquals(false, gate.onFingerDown())
-        assertEquals(false, gate.visible)
-        gate.onFingerUp()
+        assertEquals(false, tracker.onFingerDown(isLockOrAodNow = false, nowMs = 1000L))
+        assertEquals(false, tracker.visible)
+        tracker.onFingerUp()
 
         // 2. Lock screen waiting for fingerprint: touching sensor shows overlay; mismatch latches terminal & hides
-        gate.updateEnvironment(isLockOrAod = true, canAcceptLockScreenFp = true, isUnlockedPromptActive = false)
-        assertEquals(true, gate.onFingerDown())
-        assertEquals(true, gate.visible)
+        assertEquals(true, tracker.onFingerDown(isLockOrAodNow = true, nowMs = 2000L))
+        assertEquals(true, tracker.visible)
 
         // Mismatch occurs while finger stays down -> hides immediately and stays hidden
-        assertEquals(false, gate.latchTerminal("mismatch_error"))
-        assertEquals(true, gate.latchedTerminal)
-        assertEquals(false, gate.visible)
+        assertEquals(true, tracker.onMismatchError("mismatch_error", nowMs = 2200L))
+        assertEquals(true, tracker.latchedTerminal)
+        assertEquals(false, tracker.visible)
         // Finger still down -> must NOT reappear
-        assertEquals(false, gate.onFingerDown())
+        assertEquals(false, tracker.onFingerDown(isLockOrAodNow = true, nowMs = 2300L))
 
         // Finger lifts -> clears latchedTerminal
-        assertEquals(false, gate.onFingerUp())
-        assertEquals(false, gate.latchedTerminal)
+        assertEquals(false, tracker.onFingerUp())
+        assertEquals(false, tracker.latchedTerminal)
 
         // Touching again while lock screen request is still active shows animation again
-        assertEquals(true, gate.onFingerDown())
-        assertEquals(true, gate.visible)
-        gate.onFingerUp()
+        assertEquals(true, tracker.onFingerDown(isLockOrAodNow = true, nowMs = 3000L))
+        assertEquals(true, tracker.visible)
+        tracker.onFingerUp()
 
         // 3. Unlocked screen WITH BiometricPrompt active: shows on touch, hides on success/dismiss
-        gate.updateEnvironment(isLockOrAod = false, canAcceptLockScreenFp = false, isUnlockedPromptActive = true)
-        assertEquals(true, gate.onFingerDown())
-        assertEquals(false, gate.latchTerminal("unlock_success"))
-        assertEquals(false, gate.visible)
-        gate.onFingerUp()
+        tracker.onPromptStarted("AuthContainerView", windowId = 7, isLockOrAodNow = false)
+        assertEquals(true, tracker.onFingerDown(isLockOrAodNow = false, nowMs = 4000L))
+        assertEquals(false, tracker.onPromptStopped("unlock_success"))
+        assertEquals(false, tracker.visible)
+        tracker.onFingerUp()
 
         // 4. Verify BiometricSignatures helpers
         assertTrue(BiometricSignatures.isBiometricPackage("com.android.systemui"))
