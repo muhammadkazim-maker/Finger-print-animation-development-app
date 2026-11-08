@@ -534,7 +534,7 @@ fun ChangeAnimationScreen(
                         contentAlignment = Alignment.Center,
                         modifier = Modifier
                             .size(240.dp)
-                            .background(Color.Black, CircleShape)
+                            .background(Color.Transparent, CircleShape)
                             .padding(4.dp)
                     ) {
                         LoopingAssetVideoPreview(
@@ -623,8 +623,10 @@ fun LoopingAssetVideoPreview(
             } else {
                 videoView.setPlaybackSpeed(speed)
                 if (isCardSelected) {
-                    videoView.startImmediate()
-                } else {
+                    if (!videoView.isAnimatingNow) {
+                        videoView.startImmediate()
+                    }
+                } else if (videoView.isAnimatingNow) {
                     videoView.pauseAndReset()
                 }
             }

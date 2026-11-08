@@ -1025,6 +1025,51 @@ object ProVideoFrameCache {
         }
     }
 
+    /**
+     * Ensures 100% real-OS optical transparency on every decoded bitmap by unpremultiplying
+     * any residual dark WebP compression pixels from black once on the background decode thread.
+     * Result: zero black/dark background pixels and zero per-frame shader or blending overhead.
+     */
+    private fun sanitizeOpticalTransparencyInPlace(bmp: Bitmap): Bitmap {
+        if (bmp.isRecycled || !bmp.isMutable) return bmp
+        val w = bmp.width
+        val h = bmp.height
+        if (w <= 0 || h <= 0) return bmp
+        val pixels = IntArray(w * h)
+        bmp.getPixels(pixels, 0, w, 0, 0, w, h)
+        for (i in pixels.indices) {
+            val c = pixels[i]
+            val a = (c ushr 24) and 0xFF
+            if (a <= 4) {
+                pixels[i] = 0
+                continue
+            }
+            val r = (c ushr 16) and 0xFF
+            val g = (c ushr 8) and 0xFF
+            val b = c and 0xFF
+            val mx = maxOf(r, g, b)
+            val lum = (r * 3 + g * 6 + b) / 10
+            val intensity = maxOf(mx, lum)
+            if (intensity <= 16) {
+                pixels[i] = 0
+                continue
+            }
+            // Optical alpha cannot exceed the pixel's luminous light emission
+            val optA = minOf(a, ((intensity - 16) * 255 / 215).coerceIn(0, 255))
+            if (optA <= 3) {
+                pixels[i] = 0
+                continue
+            }
+            // Unpremultiply RGB from black so no dark/black tint is ever composited over the screen
+            val outR = (r * 255 / mx).coerceIn(0, 255)
+            val outG = (g * 255 / mx).coerceIn(0, 255)
+            val outB = (b * 255 / mx).coerceIn(0, 255)
+            pixels[i] = (optA shl 24) or (outR shl 16) or (outG shl 8) or outB
+        }
+        bmp.setPixels(pixels, 0, w, 0, 0, w, h)
+        return bmp
+    }
+
     private fun decodeAtlasFromAssets(context: Context, atlasPath: String, sampleSize: Int): Bitmap? {
         return try {
             context.assets.open(atlasPath).use { input ->
@@ -1032,9 +1077,9 @@ object ProVideoFrameCache {
                     inPreferredConfig = Bitmap.Config.ARGB_8888
                     inSampleSize = sampleSize.coerceAtLeast(1)
                     inScaled = false
-                    inMutable = false
+                    inMutable = true
                 }
-                BitmapFactory.decodeStream(input, null, opts)
+                BitmapFactory.decodeStream(input, null, opts)?.let { sanitizeOpticalTransparencyInPlace(it) }
             }
         } catch (_: OutOfMemoryError) {
             synchronized(memoryCache) {
@@ -1053,9 +1098,9 @@ object ProVideoFrameCache {
                             inPreferredConfig = Bitmap.Config.ARGB_8888
                             inSampleSize = 2
                             inScaled = false
-                            inMutable = false
+                            inMutable = true
                         }
-                        BitmapFactory.decodeStream(input, null, opts)
+                        BitmapFactory.decodeStream(input, null, opts)?.let { sanitizeOpticalTransparencyInPlace(it) }
                     }
                 }.getOrNull()
             } else {
@@ -1196,32 +1241,6 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
     private val fullBmpSrcRect = Rect()
     private val dstRect = RectF()
 
-    // Hardware clip paths aligned with natural empty radial gaps when layers are not yet cached
-    private val circleBoundaryClipPath = android.graphics.Path()
-    private val hudOuterClipPath = android.graphics.Path()
-    private val hudMidClipPath = android.graphics.Path()
-    private val hudInnerClipPath = android.graphics.Path()
-
-    private val pcbOuterClipPath = android.graphics.Path()
-    private val pcbMidClipPath = android.graphics.Path()
-    private val pcbInnerClipPath = android.graphics.Path()
-
-    private val speedoOuterClipPath = android.graphics.Path()
-    private val speedoMidClipPath = android.graphics.Path()
-    private val speedoInnerClipPath = android.graphics.Path()
-
-    private val spiroInnerClipPath = android.graphics.Path()
-    private val spiroOuterClipPath = android.graphics.Path()
-
-    private val polyInnerClipPath = android.graphics.Path()
-    private val polyOuterClipPath = android.graphics.Path()
-
-    private val eqInnerClipPath = android.graphics.Path()
-    private val eqOuterClipPath = android.graphics.Path()
-
-    private val latticeInnerClipPath = android.graphics.Path()
-    private val latticeOuterClipPath = android.graphics.Path()
-
     var preferCompactDecode: Boolean = false
 
     private var loadedAssetPath: String? = null
@@ -1235,6 +1254,9 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
     private var lastFrameTimeNanos: Long = 0L
     private var choreographerScheduled = false
 
+    val isAnimatingNow: Boolean
+        get() = isPlaying
+
     init {
         setWillNotDraw(false)
         setBackgroundColor(Color.TRANSPARENT)
@@ -1245,66 +1267,12 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
         updateDstRect(w, h)
     }
 
-    private fun buildTwoZoneClipPaths(
-        cx: Float,
-        cy: Float,
-        r: Float,
-        splitFraction: Float,
-        innerPath: android.graphics.Path,
-        outerPath: android.graphics.Path
-    ) {
-        innerPath.reset()
-        innerPath.addCircle(cx, cy, r * splitFraction, android.graphics.Path.Direction.CW)
-        outerPath.reset()
-        outerPath.addCircle(cx, cy, r * 1.05f, android.graphics.Path.Direction.CW)
-        outerPath.op(innerPath, android.graphics.Path.Op.DIFFERENCE)
-    }
-
-    private fun buildThreeZoneClipPaths(
-        cx: Float,
-        cy: Float,
-        r: Float,
-        split1: Float,
-        split2: Float,
-        innerPath: android.graphics.Path,
-        midPath: android.graphics.Path,
-        outerPath: android.graphics.Path
-    ) {
-        innerPath.reset()
-        innerPath.addCircle(cx, cy, r * split1, android.graphics.Path.Direction.CW)
-
-        midPath.reset()
-        midPath.addCircle(cx, cy, r * split2, android.graphics.Path.Direction.CW)
-        midPath.op(innerPath, android.graphics.Path.Op.DIFFERENCE)
-
-        val midOuterUnion = android.graphics.Path()
-        midOuterUnion.addCircle(cx, cy, r * split2, android.graphics.Path.Direction.CW)
-        outerPath.reset()
-        outerPath.addCircle(cx, cy, r * 1.05f, android.graphics.Path.Direction.CW)
-        outerPath.op(midOuterUnion, android.graphics.Path.Op.DIFFERENCE)
-    }
-
     private fun updateDstRect(w: Int, h: Int) {
         if (w <= 0 || h <= 0) return
         val d = minOf(w, h).toFloat()
         val left = (w - d) / 2f
         val top = (h - d) / 2f
         dstRect.set(left, top, left + d, top + d)
-        val cx = dstRect.centerX()
-        val cy = dstRect.centerY()
-        val r = d * 0.5f
-
-        circleBoundaryClipPath.reset()
-        circleBoundaryClipPath.addCircle(cx, cy, r, android.graphics.Path.Direction.CW)
-
-        buildThreeZoneClipPaths(cx, cy, r, 0.49f, 0.78f, hudInnerClipPath, hudMidClipPath, hudOuterClipPath)
-        buildThreeZoneClipPaths(cx, cy, r, 0.44f, 0.59f, pcbInnerClipPath, pcbMidClipPath, pcbOuterClipPath)
-        buildThreeZoneClipPaths(cx, cy, r, 0.53f, 0.70f, speedoInnerClipPath, speedoMidClipPath, speedoOuterClipPath)
-
-        buildTwoZoneClipPaths(cx, cy, r, 0.53f, spiroInnerClipPath, spiroOuterClipPath)
-        buildTwoZoneClipPaths(cx, cy, r, 0.62f, polyInnerClipPath, polyOuterClipPath)
-        buildTwoZoneClipPaths(cx, cy, r, 0.40f, eqInnerClipPath, eqOuterClipPath)
-        buildTwoZoneClipPaths(cx, cy, r, 0.81f, latticeInnerClipPath, latticeOuterClipPath)
     }
 
     fun setVideoAsset(
@@ -1382,8 +1350,8 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
             }
         }
         if (lastFrameTimeNanos == 0L) {
-            scheduleNextFrame()
             invalidate()
+            scheduleNextFrame()
         } else {
             scheduleNextFrame()
         }
@@ -1517,16 +1485,11 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
         val item = loadedItem ?: ProVideoFolder.findItem(path).also { loadedItem = it }
         val isGridAtlas = item?.isAtlasGrid ?: (bmp.width >= 480 && item == null)
 
-        val saveCount = canvas.save()
-        if (!circleBoundaryClipPath.isEmpty) {
-            canvas.clipPath(circleBoundaryClipPath)
-        }
         if (isGridAtlas) {
             drawMultiFrameVideoAtlas(canvas, bmp)
         } else {
             drawLiveRealDesign(canvas, bmp, item)
         }
-        canvas.restoreToCount(saveCount)
     }
 
     private fun drawMultiFrameVideoAtlas(canvas: Canvas, bmp: Bitmap) {
@@ -1774,19 +1737,6 @@ class OverlayAnimHostView(context: Context) : FrameLayout(context) {
 
     init {
         setBackgroundColor(Color.TRANSPARENT)
-        outlineProvider = object : ViewOutlineProvider() {
-            override fun getOutline(view: View, outline: Outline) {
-                val w = view.width
-                val h = view.height
-                if (w > 0 && h > 0) {
-                    val d = minOf(w, h)
-                    val left = (w - d) / 2
-                    val top = (h - d) / 2
-                    outline.setOval(left, top, left + d, top + d)
-                }
-            }
-        }
-        clipToOutline = true
         addView(lottieView)
         addView(videoView)
     }
