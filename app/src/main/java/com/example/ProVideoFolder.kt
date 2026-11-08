@@ -1197,6 +1197,7 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
     private val dstRect = RectF()
 
     // Hardware clip paths aligned with natural empty radial gaps when layers are not yet cached
+    private val circleBoundaryClipPath = android.graphics.Path()
     private val hudOuterClipPath = android.graphics.Path()
     private val hudMidClipPath = android.graphics.Path()
     private val hudInnerClipPath = android.graphics.Path()
@@ -1292,6 +1293,9 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
         val cx = dstRect.centerX()
         val cy = dstRect.centerY()
         val r = d * 0.5f
+
+        circleBoundaryClipPath.reset()
+        circleBoundaryClipPath.addCircle(cx, cy, r, android.graphics.Path.Direction.CW)
 
         buildThreeZoneClipPaths(cx, cy, r, 0.49f, 0.78f, hudInnerClipPath, hudMidClipPath, hudOuterClipPath)
         buildThreeZoneClipPaths(cx, cy, r, 0.44f, 0.59f, pcbInnerClipPath, pcbMidClipPath, pcbOuterClipPath)
@@ -1513,11 +1517,16 @@ class LoopingAssetVideoView(context: Context) : View(context), Choreographer.Fra
         val item = loadedItem ?: ProVideoFolder.findItem(path).also { loadedItem = it }
         val isGridAtlas = item?.isAtlasGrid ?: (bmp.width >= 480 && item == null)
 
+        val saveCount = canvas.save()
+        if (!circleBoundaryClipPath.isEmpty) {
+            canvas.clipPath(circleBoundaryClipPath)
+        }
         if (isGridAtlas) {
             drawMultiFrameVideoAtlas(canvas, bmp)
         } else {
             drawLiveRealDesign(canvas, bmp, item)
         }
+        canvas.restoreToCount(saveCount)
     }
 
     private fun drawMultiFrameVideoAtlas(canvas: Canvas, bmp: Bitmap) {
@@ -1749,6 +1758,7 @@ class OverlayAnimHostView(context: Context) : FrameLayout(context) {
         setCacheComposition(true)
         setIgnoreDisabledSystemAnimations(true)
         enableMergePathsForKitKatAndAbove(true)
+        scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
         repeatCount = LottieDrawable.INFINITE
         layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT, Gravity.CENTER)
     }
@@ -1764,6 +1774,19 @@ class OverlayAnimHostView(context: Context) : FrameLayout(context) {
 
     init {
         setBackgroundColor(Color.TRANSPARENT)
+        outlineProvider = object : ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: Outline) {
+                val w = view.width
+                val h = view.height
+                if (w > 0 && h > 0) {
+                    val d = minOf(w, h)
+                    val left = (w - d) / 2
+                    val top = (h - d) / 2
+                    outline.setOval(left, top, left + d, top + d)
+                }
+            }
+        }
+        clipToOutline = true
         addView(lottieView)
         addView(videoView)
     }

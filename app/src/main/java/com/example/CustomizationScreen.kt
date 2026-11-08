@@ -216,94 +216,94 @@ fun CustomizationScreen(
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
                     FilledTonalButton(
                         onClick = { speed = (speed - 0.5f).coerceIn(0.25f, 8.0f) },
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp),
+                        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 6.dp),
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("-0.5x")
+                        Text("-0.5x", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall)
                     }
                     FilledTonalButton(
                         onClick = { speed = (speed - 0.1f).coerceIn(0.25f, 8.0f) },
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp),
+                        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 6.dp),
                         modifier = Modifier
                             .weight(1f)
                             .testTag("speed_minus_button")
                     ) {
-                        Text("-0.1x")
+                        Text("-0.1x", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall)
                     }
                     FilledTonalButton(
                         onClick = { speed = 1.0f },
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp),
+                        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 6.dp),
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("1.0x")
+                        Text("1.0x", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall)
                     }
                     FilledTonalButton(
                         onClick = { speed = 2.0f },
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp),
+                        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 6.dp),
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("2.0x")
+                        Text("2.0x", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall)
                     }
                     FilledTonalButton(
                         onClick = { speed = (speed + 0.1f).coerceIn(0.25f, 8.0f) },
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp),
+                        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 6.dp),
                         modifier = Modifier
                             .weight(1f)
                             .testTag("speed_plus_button")
                     ) {
-                        Text("+0.1x")
+                        Text("+0.1x", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall)
                     }
                     FilledTonalButton(
                         onClick = { speed = (speed + 0.5f).coerceIn(0.25f, 8.0f) },
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp),
+                        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 6.dp),
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("+0.5x")
+                        Text("+0.5x", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall)
                     }
                 }
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
                     FilledTonalButton(
                         onClick = { speed = 3.0f },
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp),
+                        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 6.dp),
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("3.0x")
+                        Text("3.0x", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall)
                     }
                     FilledTonalButton(
                         onClick = { speed = 4.0f },
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp),
+                        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 6.dp),
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("4.0x")
+                        Text("4.0x", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall)
                     }
                     FilledTonalButton(
                         onClick = { speed = 5.0f },
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp),
+                        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 6.dp),
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("5.0x")
+                        Text("5.0x", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall)
                     }
                     FilledTonalButton(
                         onClick = { speed = 6.0f },
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp),
+                        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 6.dp),
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("6.0x")
+                        Text("6.0x", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall)
                     }
                     FilledTonalButton(
                         onClick = { speed = 8.0f },
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp),
-                        modifier = Modifier.weight(1.2f)
+                        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 6.dp),
+                        modifier = Modifier.weight(1.3f)
                     ) {
-                        Text("8.0x Max")
+                        Text("8.0x Max", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall)
                     }
                 }
             }
@@ -349,53 +349,53 @@ fun CustomizationScreen(
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
                     FilledTonalButton(
                         onClick = { size = (size - 0.01f).coerceIn(0.15f, 1.0f) },
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
+                        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 8.dp),
                         modifier = Modifier
                             .weight(1f)
                             .testTag("size_minus_button")
                     ) {
-                        Text("-1%")
+                        Text("-1%", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall)
                     }
                     FilledTonalButton(
                         onClick = { size = 0.28f },
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
+                        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 8.dp),
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("28%")
+                        Text("28%", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall)
                     }
                     FilledTonalButton(
                         onClick = { size = 0.50f },
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
+                        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 8.dp),
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("50%")
+                        Text("50%", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall)
                     }
                     FilledTonalButton(
                         onClick = { size = 0.75f },
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
+                        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 8.dp),
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("75%")
+                        Text("75%", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall)
                     }
                     FilledTonalButton(
                         onClick = { size = 1.0f },
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
-                        modifier = Modifier.weight(1.1f)
+                        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 8.dp),
+                        modifier = Modifier.weight(1.15f)
                     ) {
-                        Text("100%")
+                        Text("100%", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall)
                     }
                     FilledTonalButton(
                         onClick = { size = (size + 0.01f).coerceIn(0.15f, 1.0f) },
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
+                        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 8.dp),
                         modifier = Modifier
                             .weight(1f)
                             .testTag("size_plus_button")
                     ) {
-                        Text("+1%")
+                        Text("+1%", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall)
                     }
                 }
             }
@@ -448,46 +448,46 @@ fun CustomizationScreen(
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     FilledTonalButton(
                         onClick = { sensorSize = (sensorSize - 0.01f).coerceIn(0.04f, 0.25f) },
-                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
                         modifier = Modifier
                             .weight(1f)
                             .testTag("sensor_size_minus_button")
                     ) {
-                        Text("-1%")
+                        Text("-1%", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall)
                     }
                     FilledTonalButton(
                         onClick = { sensorSize = 0.06f },
-                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("6%")
+                        Text("6%", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall)
                     }
                     FilledTonalButton(
                         onClick = { sensorSize = 0.10f },
-                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
-                        modifier = Modifier.weight(1.2f)
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
+                        modifier = Modifier.weight(1.25f)
                     ) {
-                        Text("10% S25")
+                        Text("10% S25", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall)
                     }
                     FilledTonalButton(
                         onClick = { sensorSize = 0.14f },
-                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("14%")
+                        Text("14%", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall)
                     }
                     FilledTonalButton(
                         onClick = { sensorSize = (sensorSize + 0.01f).coerceIn(0.04f, 0.25f) },
-                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
                         modifier = Modifier
                             .weight(1f)
                             .testTag("sensor_size_plus_button")
                     ) {
-                        Text("+1%")
+                        Text("+1%", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall)
                     }
                 }
             }
